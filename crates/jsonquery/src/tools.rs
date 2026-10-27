@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use crate::query::{DEFAULT_LIMIT, MAX_BYTES};
+use crate::query::{DEFAULT_LIMIT, size};
 
 /// One tool as an MCP `tools/list` entry describes it.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,23 +64,25 @@ impl ModelText {
     }
 }
 
-/// The three tools, in the order an agent uses them: query, schema, patch.
-pub fn all(text: &ModelText) -> Vec<ToolDef> {
-    vec![query_document(text), document_schema(text), patch_document(text)]
+/// The three tools, in the order an agent uses them: query, schema, patch; `max_bytes` is the
+/// app's limit on a query's answer ([`crate::QueryOpts::max_bytes`]), which the description gives.
+pub fn all(text: &ModelText, max_bytes: usize) -> Vec<ToolDef> {
+    vec![query_document(text, max_bytes), document_schema(text), patch_document(text)]
 }
 
-/// `query_document`: JSONPath over the model ([`crate::query::from_params`]).
-pub fn query_document(text: &ModelText) -> ToolDef {
+/// `query_document`: JSONPath over the model ([`crate::query::from_params`]), its answer never
+/// past `max_bytes` (the app's [`crate::QueryOpts::max_bytes`]).
+pub fn query_document(text: &ModelText, max_bytes: usize) -> ToolDef {
     let examples = text.query_examples.join(", ");
     ToolDef {
         name: "query_document",
         title: "Query the document model",
         description: format!(
-            "JSONPath (RFC 9535) over the {model}{source}, for one part of a large document{examples}. Answers {{matches: [{{path, pointer, value}}], total}}: each match's normalized path and its JSON Pointer (what patch_document takes), bounded: at most `limit` matches, each value cut at `depth` levels (containers below are summarized), never past {mib} MiB. document_schema describes the model's types and the type at a path.",
+            "JSONPath (RFC 9535) over the {model}{source}, for one part of a large document{examples}. Answers {{matches: [{{path, pointer, value}}], total}}: each match's normalized path and its JSON Pointer (what patch_document takes), bounded: at most `limit` matches, each value cut at `depth` levels (containers below are summarized), never past {limit}. document_schema describes the model's types and the type at a path.",
             model = text.model,
             source = text.source(),
             examples = if examples.is_empty() { String::new() } else { format!(": {examples}") },
-            mib = MAX_BYTES >> 20,
+            limit = size(max_bytes),
         ),
         input_schema: json!({
             "type": "object",

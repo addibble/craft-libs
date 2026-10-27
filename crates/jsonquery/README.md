@@ -6,8 +6,8 @@ document model:
 
 - `query_document`: JSONPath ([RFC 9535](https://www.rfc-editor.org/rfc/rfc9535)) over the model.
   Each match comes with its normalized path and its JSON Pointer, and the answer is bounded by
-  `limit`, `offset`, `depth` (what lies below is summarized, never silently dropped) and a 1 MiB
-  ceiling that says what to narrow.
+  `limit`, `offset`, `depth` (what lies below is summarized, never silently dropped) and the app's
+  byte limit: an answer that would pass it is refused with what to narrow.
 - `document_schema`: the model's JSON Schema, read one type at a time: the root, one named type
   (its properties' types, defaults and descriptions, and the types to read next), the type of the
   value at a JSONPath into the live document (an enum resolved to the variant the value is), or an
@@ -24,16 +24,21 @@ document model:
 - The schema is the app's: it generates it from its own types and doc comments with `schemars`
   (0.8 or 1.x; both are read) and hands it over as JSON, so it never lags the format and this crate
   does not depend on `schemars`.
+- The byte limit is the app's (`QueryOpts::new(max_bytes, layout)`; there is no default, and a
+  tool's arguments never change it) and is kept exactly in the layout the app writes the answer
+  in, compact or pretty-printed. Each match is measured before any of the answer is built, and
+  measuring stops at the first byte past what is left, so an answer that does not fit costs no
+  more work than the limit; the answer built is checked once more as the app writes it.
 - Never crashes: no panics, no `unsafe`. A bad path, patch or argument is an error that says what
   to do instead.
-- No I/O; compiles for `wasm32-unknown-unknown`. Dependencies: `serde_json`, `serde_json_path` and
-  `json-patch`.
+- No I/O; compiles for `wasm32-unknown-unknown`. Dependencies: `serde`, `serde_json`, `serde_json_path`
+  and `json-patch`.
 
 ## Usage
 
 ```rust
 use craft_jsonquery::tools::{self, ModelText};
-use craft_jsonquery::{Patch, Schema, query};
+use craft_jsonquery::{Layout, Patch, QueryOpts, Schema, query};
 use serde_json::json;
 
 // The app's model as JSON, and its schema (from `schemars::schema_for!(Document)` in an app).
@@ -57,11 +62,13 @@ let text = ModelText {
     pointer_example: "/artboards/0/name".into(),
     patch_note: String::new(),
 };
-let listed: Vec<_> = tools::all(&text).iter().map(|t| t.to_json()).collect();
+// The app's limit on a query's answer, as its MCP server writes answers (pretty-printed here).
+let opts = QueryOpts::new(256 << 10, Layout::Pretty);
+let listed: Vec<_> = tools::all(&text, opts.max_bytes).iter().map(|t| t.to_json()).collect();
 assert_eq!(listed.len(), 3);
 
 // `query_document`: the matches, each with the pointer a patch takes.
-let found = query::from_params(&doc, &json!({"path": "$.artboards[?@.name == 'two']"})).unwrap();
+let found = query::from_params(&doc, &json!({"path": "$.artboards[?@.name == 'two']"}), opts).unwrap();
 assert_eq!(found["matches"][0]["pointer"], "/artboards/1");
 
 // `document_schema`: the type there.

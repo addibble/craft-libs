@@ -18,7 +18,7 @@ fn text() -> ModelText {
 
 #[test]
 fn the_three_tools_are_listed_in_the_order_an_agent_uses_them() {
-    let tools = all(&text());
+    let tools = all(&text(), 1 << 20);
     let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
     assert_eq!(names, ["query_document", "document_schema", "patch_document"]);
     let read_only: Vec<bool> = tools.iter().map(|t| t.read_only).collect();
@@ -35,7 +35,7 @@ fn the_three_tools_are_listed_in_the_order_an_agent_uses_them() {
 
 #[test]
 fn the_descriptions_speak_of_the_apps_model() {
-    let q = query_document(&text());
+    let q = query_document(&text(), 1 << 20);
     assert!(
         q.description.contains("over the document model as document.json gives it, for one part of a large document: $.artboards[*].name"),
         "{}",
@@ -46,7 +46,7 @@ fn the_descriptions_speak_of_the_apps_model() {
     assert!(p.description.ends_with("One undo step, named `label`. An object added without an id gets a fresh one."), "{}", p.description);
     assert!(p.input_schema["properties"]["patch"]["items"]["description"].as_str().unwrap().contains("/layers/0/kind/children/2/opacity"));
     let bare = ModelText { source: String::new(), query_examples: vec![], patch_note: String::new(), ..text() };
-    assert!(query_document(&bare).description.contains("over the document model, for one part of a large document. Answers"));
+    assert!(query_document(&bare, 64 << 10).description.contains("over the document model, for one part of a large document. Answers"));
     assert!(patch_document(&bare).description.ends_with("named `label`."));
 }
 
@@ -54,11 +54,18 @@ fn the_descriptions_speak_of_the_apps_model() {
 #[test]
 fn each_tools_arguments_are_the_ones_its_handler_reads() {
     let props = |t: &craft_jsonquery::ToolDef| -> Vec<String> { t.input_schema["properties"].as_object().unwrap().keys().cloned().collect() };
-    let [q, s, p] = <[_; 3]>::try_from(all(&text())).unwrap();
+    let [q, s, p] = <[_; 3]>::try_from(all(&text(), 1 << 20)).unwrap();
     assert_eq!(props(&q), ["depth", "limit", "offset", "path"]);
     assert_eq!(q.input_schema["required"], json!(["path"]));
     let doc = json!({"a": [1, 2]});
-    assert!(craft_jsonquery::query::from_params(&doc, &json!({"path": "$.a[*]", "limit": 1, "offset": 0, "depth": 0})).is_ok());
+    assert!(
+        craft_jsonquery::query::from_params(
+            &doc,
+            &json!({"path": "$.a[*]", "limit": 1, "offset": 0, "depth": 0}),
+            craft_jsonquery::QueryOpts::new(1 << 20, craft_jsonquery::Layout::Pretty)
+        )
+        .is_ok()
+    );
     assert_eq!(props(&s), ["at", "index", "type"]);
     let schema = Schema::new(json!({"type": "object", "properties": {"a": {"type": "array", "items": {"type": "integer"}}}}), "Model");
     assert_eq!(schema.answer(&json!({"at": "$.a[0]"}), || Ok::<Value, String>(doc.clone())).unwrap()["shape"], "integer");

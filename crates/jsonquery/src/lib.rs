@@ -10,7 +10,8 @@
 //!
 //! - [`query`]: JSONPath ([RFC 9535](https://www.rfc-editor.org/rfc/rfc9535)) over the model,
 //!   each match with its normalized path and its JSON Pointer, bounded by `limit`, `offset`,
-//!   `depth` (what lies below is summarized, never silently dropped) and a byte ceiling.
+//!   `depth` (what lies below is summarized, never silently dropped) and the app's byte limit,
+//!   kept exactly in the layout the app writes the answer in.
 //! - [`patch`]: JSON Patch ([RFC 6902](https://www.rfc-editor.org/rfc/rfc6902)) at JSON Pointers
 //!   ([RFC 6901](https://www.rfc-editor.org/rfc/rfc6901)), the pointers a query answers; applied
 //!   in order, all or none. The app loads the result through its model, which refuses what the
@@ -34,7 +35,7 @@ pub mod schema;
 pub mod tools;
 
 pub use patch::Patch;
-pub use query::QueryOpts;
+pub use query::{Layout, QueryOpts};
 pub use schema::Schema;
 pub use tools::{ModelText, ToolDef};
 
