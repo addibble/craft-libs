@@ -1,0 +1,22 @@
+[package]
+name = "craft-jsonquery"
+description = "Read and change a large JSON model a part at a time: JSONPath queries, JSON Patch and the model's schema a type at a time, for the Craft apps' MCP servers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+serde_json_path.workspace = true
+json-patch.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+# Both schemars lines generate the test models' schemas: `Schema` reads either one.
+schemars08 = { package = "schemars", version = "0.8" }
+schemars1 = { package = "schemars", version = "1" }
+
+[lints]
+workspace = true

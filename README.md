@@ -60,6 +60,9 @@ craft-<name> = { git = "https://github.com/storytold/craft-libs", rev = "<commit
 - [`craft-jpeg`](crates/jpeg/README.md): clean-room decoder for 12-bit and arithmetic-coded
   JPEG (T.81 SOF0/SOF1 at 12 bits, SOF9, SOF10), from PhotoCraft, and a frame probe for routing.
   Metadata stays in each app.
+- [`craft-jsonquery`](crates/jsonquery/README.md): a large JSON model read and changed a part at a
+  time, for agents: JSONPath queries (RFC 9535), JSON Patch (RFC 6902) and the model's schema read a
+  type at a time, with the matching MCP tool definitions. Pure, no I/O, wasm-safe.
 - [`craft-keymap`](crates/keymap/README.md): keyboard bindings: chords and their text forms,
   scopes, conflicts, user overrides stored through craft-settings and import of other
   applications' shortcut sets. Command catalogs, file readers and the shortcut editor UI stay
