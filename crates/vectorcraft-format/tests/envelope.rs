@@ -63,7 +63,7 @@ fn full_file(pdf: &[u8]) -> (File<Doc>, Tail<'_>) {
 fn a_version_4_file_with_members_after_the_json_is_written_as_the_app_writes_it() {
     let pdf = pdf();
     let (file, tail) = full_file(&pdf);
-    let mut expected = br#"{"format":"vectorcraft","version":4,"generator":"VectorCraft 0.17.0","preview":{"mime":"image/png","data":"iVBORw0KGgo="},"pdf":{"mime":"application/pdf","blob":[0,8192]},"document":{"layers":[{"name":"Layer 1"}]},"images":{"k":{"mime":"image/png","data":"AQID+g=="}}}"#.to_vec();
+    let mut expected = br#"{"format":"vectorcraft","version":6,"generator":"VectorCraft 0.17.0","preview":{"mime":"image/png","data":"iVBORw0KGgo="},"pdf":{"mime":"application/pdf","blob":[0,8192]},"document":{"layers":[{"name":"Layer 1"}]},"images":{"k":{"mime":"image/png","data":"AQID+g=="}}}"#.to_vec();
     expected.extend(b"\n\0VCBLOBS\0");
     expected.extend(&pdf);
     assert_eq!(written(&file, &tail, false), expected);
@@ -77,7 +77,7 @@ fn a_pretty_file_without_optional_members_is_written_as_the_app_writes_it() {
     file.generator = Some("VectorCraft 0.17.0".into());
     let expected = r#"{
   "format": "vectorcraft",
-  "version": 4,
+  "version": 6,
   "generator": "VectorCraft 0.17.0",
   "document": {
     "layers": [
@@ -254,9 +254,9 @@ fn contents_read_the_document_images_and_profiles_without_the_preview_and_pdf() 
 
 #[test]
 fn reading_refuses_another_format_and_a_newer_version() {
-    let newer = br#"{"format":"vectorcraft","version":5,"document":0}"#;
+    let newer = br#"{"format":"vectorcraft","version":7,"document":0}"#;
     let other = br#"{"format":"other","version":1,"document":0}"#;
-    for (json, error) in [(&newer[..], Error::TooNew(5)), (other, Error::Format("other".into()))] {
+    for (json, error) in [(&newer[..], Error::TooNew(7)), (other, Error::Format("other".into()))] {
         let file = File::<IgnoredAny>::read(json);
         assert!(matches!(&file, Err(ReadError::Envelope(e)) if *e == error), "{file:?}");
         let contents = Contents::<IgnoredAny>::read(json);
@@ -329,7 +329,7 @@ fn an_array_holds_format_version_document_images_and_profiles_in_that_order() {
     let contents = Contents::<Doc>::read(full.as_bytes()).unwrap();
     assert_eq!((contents.images.len(), contents.profiles.len()), (1, 1));
     assert!(contents.images.contains_key("k") && contents.profiles.contains_key("Gray"));
-    for json in [r#"["vectorcraft",3,{},{"layers":[]},{}]"#, r#"["vectorcraft",3]"#, r#"["vectorcraft",5,{"layers":[]}]"#] {
+    for json in [r#"["vectorcraft",3,{},{"layers":[]},{}]"#, r#"["vectorcraft",3]"#, r#"["vectorcraft",7,{"layers":[]}]"#] {
         assert!(Contents::<Doc>::read(json.as_bytes()).is_err(), "{json}");
         assert!(File::<Doc>::read(json.as_bytes()).is_err(), "{json}");
     }

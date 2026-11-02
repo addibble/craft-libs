@@ -45,8 +45,9 @@ use serde::de::value::SeqAccessDeserializer;
 use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
-/// The newest version: data after the JSON. Versions 1 to 3 still load.
-pub const VERSION: u32 = 4;
+/// The newest version: v4 puts data after the JSON, v5 may link a colour to a global swatch by
+/// the swatch's name, and v6 writes geometry in SVG's notation. Versions 1 to 5 still load.
+pub const VERSION: u32 = 6;
 /// The oldest version VectorCraft writes.
 pub const MIN_VERSION: u32 = 1;
 /// The first version whose readers open compressed files.
