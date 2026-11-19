@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Deserialize;
 
-use crate::source::{Origin, fill, parse};
+use crate::source::{Origin, check_host_id, fill, parse};
 
 /// The largest index read.
 pub const MAX_INDEX_BYTES: usize = 32 << 20;
@@ -355,14 +355,14 @@ pub struct Face<'a> {
 /// A source of fonts: one index file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontSource {
-    /// The ID its families carry: `google/fonts`, `notofonts`, or `user:<host>/<id>` for a
-    /// source the user added.
+    /// The ID its families carry: `google/fonts`, `notofonts`, `user:<host>/<id>` for a
+    /// source the user added, or `host:<id>` for one the build's host gave.
     pub id: String,
     /// Display name (`Google Fonts`, `Noto`).
     pub name: String,
     /// The source's web page.
     pub homepage: Option<String>,
-    /// A built-in source. A source the user added is never curated, whatever its file says.
+    /// A built-in source. A source the user or the host added is never curated, whatever its file says.
     pub curated: bool,
     /// The index format version, `"MAJOR.MINOR"`.
     pub version: String,
@@ -437,6 +437,18 @@ impl Index {
     pub fn from_user_bytes(bytes: &[u8], url: &str) -> Result<Self, IndexError> {
         let json = if is_gzip(bytes) { gunzip(bytes, MAX_INDEX_BYTES)? } else { bytes.to_vec() };
         parse(&json, Origin::User { url })
+    }
+
+    /// Reads an index a build's host gives (JSON or gzipped JSON), checked by exactly the rules
+    /// [`Index::from_user_bytes`] applies: not curated, whatever its file says, and its source ID
+    /// `host:<id>`, so it can't stand in for a built-in or a `user:` source. `id` is the host's
+    /// name for the index: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `.`. The index's file
+    /// URL templates and paths are checked as for any source (https only), so an index with an
+    /// http template, an unsafe path or a bad sha256 is refused whole.
+    pub fn from_host_bytes(bytes: &[u8], id: &str) -> Result<Self, IndexError> {
+        check_host_id(id)?;
+        let json = if is_gzip(bytes) { gunzip(bytes, MAX_INDEX_BYTES)? } else { bytes.to_vec() };
+        parse(&json, Origin::Host { id })
     }
 
     /// The built-in sources compiled into this build ([`crate::PINNED_INDEX`]): `sources.json`

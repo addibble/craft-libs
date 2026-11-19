@@ -11,6 +11,7 @@ The indexes are [aiongg/craft-font-index](https://github.com/aiongg/craft-font-i
 | Google Fonts | `google/fonts` | yes | [google/fonts](https://github.com/google/fonts) at the commit the index records |
 | Noto | `notofonts` | yes | [notofonts](https://github.com/notofonts) repositories at the commits and release tags the index records (the full CJK fonts from noto-cjk, and script families, widths and UI variants Google Fonts lacks) |
 | An index the user adds | `user:<host>/<id>` | never | wherever its URL templates point (https only) |
+| An index the build's host gives | `host:<id>` | never | wherever its URL templates point (https only) |
 
 The built-in sources are the indexes `sources.json` lists. `PINNED_INDEX` names a commit of the index repository and the sha256 of its `sources.json`; each index must have the size and sha256 `sources.json` gives it.
 
@@ -20,6 +21,15 @@ A source the user adds is an index file at an https URL (`.json` or `.json.gz`).
 - its ID is prefixed with `user:<host>/`, so it can't stand in for a built-in source;
 - the sha256 of the file first fetched is kept, and a different file later shows as `FontSource::changed`;
 - only an app's own interface can add one (`add_user_source`); an agent gets `Error::NotAllowed`.
+
+A source the build's host gives is for a build that has no font store folder of its own, a web build in a browser tab or a headless engine on a server, whose host page or service has the fonts its users' documents need ([RFC-0034](https://github.com/storytold/craft-libs/issues/2331)). `Index::from_host_bytes(bytes, id)` reads it (JSON or gzipped JSON) by exactly the rules a user's source is read by, but:
+
+- `id` is the host's own name for the index: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `.`; anything else is `IndexError::Invalid`;
+- its source ID is `host:<id>`, never the ID its file declares, so it can't stand in for a built-in or a `user:` source;
+- it is never curated, whatever its file says;
+- an index with one bad entry, an `http` URL template or an unsafe path is refused whole and adds nothing; the host decides whether a list of indexes is all or nothing.
+
+An index may list a single file, so a host that hands over one face at a time needs no catalogue. The build lists the families at once and fetches a face only when type in a document uses it, from the URLs `index.file_urls(family, file)` gives, then checks it with `verify_face` (see Verifying a fetched file).
 
 ## Network access
 
@@ -42,7 +52,7 @@ A file's URLs come from its source's URL templates, best first. Both built-in so
 | `FontStore::offline_indexes()` (feature `bundled-index`) | The bundled indexes and the user's sources as last fetched. |
 | `FontStore::cached_indexes(&PINNED_INDEX)` | The indexes the last `fetch_indexes` saved, when its `sources.json` is the pin's and every built-in index matches it, with the user's sources. |
 | `FontStore::fetch_indexes(&PINNED_INDEX, &cancel)` | Downloads `sources.json`, every gzipped index it lists and every user source, checks them and saves them. An index that fails is reported in `Index::problems()`; the others load. Needs the network on. |
-| `Index::from_bytes(bytes)`, `Index::from_user_bytes(bytes, url)` | One index file, JSON or gzipped JSON. |
+| `Index::from_bytes(bytes)`, `Index::from_user_bytes(bytes, url)`, `Index::from_host_bytes(bytes, id)` | One index file, JSON or gzipped JSON. |
 | `Index::merge(indexes)` | One index of several. |
 
 Reading checks every entry: the version (a major version other than 1 is refused; unknown fields are ignored), https URL templates, safe relative paths (no empty, `.` or `..` segment, no `\`), safe and unique file names, `owner/name` repositories and refs, sha256s, sizes, weights and widths. A format 1.0 index is Google Fonts, with URLs from its `base_url` and `fallback_base_url`.
@@ -86,6 +96,17 @@ store.install_face(&index, face, &cancel, &mut |p| println!("{} of {} bytes", p.
 The licence file (`OFL.txt`, `LICENSE`) is checked against its size and sha256 and goes beside the fonts. For a format 1.0 index, which has no sha256 for it, only its size is checked (1 MiB at most).
 
 When every file has passed, the store takes `.lock`, moves the files into the family's folder and writes `manifest.json` (written atomically through `craft-atomic`). If a move or the manifest fails, the files moved so far are taken back out and replaced files are restored. A failed or cancelled install leaves nothing behind. Files already installed with the same sha256 aren't downloaded again.
+
+## Verifying a fetched file
+
+`verify_font(file, bytes)` checks a file against its entry: its size, its sha256, then that every face in it parses and has outlines. A file with the index's sha256 is the file the index lists, so it can only be the wrong font if the index itself is wrong. A host's index is not curated, so `verify_face(family, file, bytes)` checks what the entry says the file is, and takes the file's word for nothing:
+
+1. everything `verify_font` checks;
+2. that some face of the file (any face of a collection) is the entry's family: its typographic family name (name ID 16), or its legacy family name (ID 1) when it has none, equal to `family.family` ignoring case, as the index compares family names (`VerifyError::Family`);
+3. that the face has the entry's style: the `OS/2` weight and width class and the italic or oblique flag equal the entry's `weight`, `width` and `style`, a file is variable exactly when the entry lists axes, and each axis has at least the range the entry gives (`VerifyError::Style`, `VerifyError::Axis`);
+4. when the entry lists PostScript names, that the face's (ID 6) is one of them, exactly (`VerifyError::PostScript`).
+
+When no face passes, the error is the one the nearest face failed with; each says what it expected and what it found. An install that fails a check fails its source, and nothing in the file is used. The store's own installs check with `verify_font` only: their indexes are curated or added by the user, who has chosen to trust them.
 
 ## The store folder
 
@@ -163,7 +184,7 @@ Windows retains ancestor handles that prevent their replacement during cleanup.
 
 ## Web
 
-The index, the lookups, `verify_font` and `IndexPin` build for `wasm32-unknown-unknown`. The store folder and the HTTP client are native only; the web keeps fonts elsewhere.
+The index (`from_host_bytes` included), the lookups, `verify_font`, `verify_face` and `IndexPin` build for `wasm32-unknown-unknown`. The store folder and the HTTP client are native only; the web keeps fonts elsewhere.
 
 ## Tests
 
