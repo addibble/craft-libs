@@ -2,7 +2,7 @@
 
 The suite's font store: the font indexes of every source, exact lookup of a missing font, and verified installs into the one folder every app's font catalog reads ([`craft-font-catalog`](../font-catalog/README.md)'s `font_store_dir`).
 
-The indexes are [aiongg/craft-font-index](https://github.com/aiongg/craft-font-index) (format 1.x), designed by @kntrttm for photocraft#1135 and #2453. Every font file and licence in an index has a size and a sha256, and only families under a licence that allows redistribution (OFL, Apache 2.0, Ubuntu Font Licence) are listed.
+The indexes are [aiongg/craft-font-index](https://github.com/aiongg/craft-font-index) (format 1.x), designed by @kntrttm for photocraft#1135 and #2453. Every font file and licence in an index has a size and a sha256, and only families under a licence that allows redistribution (OFL, Apache 2.0, Ubuntu Font Licence, CC0 1.0, Bitstream Vera) are listed. A family under CC0 or the Bitstream Vera licence (format 1.3, for a host's own index) must list its licence file; without one it is left out, with a warning, like a family under any other licence.
 
 ## Sources
 

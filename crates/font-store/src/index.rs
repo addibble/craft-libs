@@ -17,8 +17,13 @@ pub const MAX_LICENSE_BYTES: u64 = 1 << 20;
 pub const MAJOR_VERSION: u32 = 1;
 /// The source ID of Google Fonts, and of every format 1.0 index.
 pub const GOOGLE_FONTS: &str = "google/fonts";
-/// The licences that allow redistribution. Families under any other are left out.
-pub const LICENSES: [&str; 3] = ["OFL", "APACHE2", "UFL"];
+/// The licences that allow redistribution. Families under any other are left out. `CC0` and
+/// `BITSTREAM-VERA` are format 1.3's; a reader takes them from an index of any minor version, as it
+/// takes any field.
+pub const LICENSES: [&str; 5] = ["OFL", "APACHE2", "UFL", "CC0", "BITSTREAM-VERA"];
+/// The licences whose families must have a `license_file` (format 1.3): the Bitstream Vera licence
+/// requires its notice to travel with the font, and a CC0 dedication is kept as evidence of the grant.
+pub(crate) const LICENSES_WITH_FILE: [&str; 2] = ["CC0", "BITSTREAM-VERA"];
 
 /// Why an index can't be used.
 #[derive(Debug, thiserror::Error)]

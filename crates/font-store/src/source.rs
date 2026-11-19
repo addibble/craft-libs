@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use serde::Deserialize;
 
 use crate::index::{
-    Family, FontSource, GOOGLE_FONTS, Index, IndexError, LICENSES, Language, MAJOR_VERSION, MAX_FILE_BYTES, MAX_INDEX_BYTES, MAX_LICENSE_BYTES,
-    Script,
+    Family, FontSource, GOOGLE_FONTS, Index, IndexError, LICENSES, LICENSES_WITH_FILE, Language, MAJOR_VERSION, MAX_FILE_BYTES, MAX_INDEX_BYTES,
+    MAX_LICENSE_BYTES, Script,
 };
 
 pub(crate) const MAX_STR: usize = 1024;
@@ -361,6 +361,10 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
         check_str("license", &fam.license)?;
         if !LICENSES.contains(&fam.license.as_str()) {
             warnings.push(format!("{} is left out: its licence `{}` doesn't allow redistribution", short(&fam.family), short(&fam.license)));
+            continue;
+        }
+        if fam.license_file.is_none() && LICENSES_WITH_FILE.contains(&fam.license.as_str()) {
+            warnings.push(format!("{} is left out: its licence `{}` needs a license_file", short(&fam.family), short(&fam.license)));
             continue;
         }
         check_family(&mut fam, &ctx)?;

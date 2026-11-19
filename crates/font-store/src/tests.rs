@@ -578,6 +578,47 @@ fn a_host_index_is_never_curated_and_cant_shadow_another_source() {
 }
 
 #[test]
+fn a_host_index_keeps_cc0_and_bitstream_vera_families_and_leaves_out_other_licences() {
+    let mut v = host_index();
+    let var = v["families"][1].clone();
+    let licence = |path: &str| json!({"path": path, "size": 21, "sha256": sha256_hex(b"licence text")});
+    let family = |name: &str, license: &str, dir: &str, licence_file: Option<serde_json::Value>| {
+        let mut f = var.clone();
+        f["family"] = json!(name);
+        f["license"] = json!(license);
+        f["files"][0]["path"] = json!(format!("{dir}/Face[wght].ttf"));
+        match licence_file {
+            Some(l) => f["license_file"] = l,
+            None => {
+                f.as_object_mut().unwrap().remove("license_file");
+            }
+        }
+        f
+    };
+    let families = v["families"].as_array_mut().unwrap();
+    families.push(family("Public Face", "CC0", "cc0", Some(licence("cc0/LICENSE.txt"))));
+    families.push(family("Vera Face", "BITSTREAM-VERA", "vera", Some(licence("vera/LICENSE.txt"))));
+    families.push(family("Vera Bare", "BITSTREAM-VERA", "verabare", None));
+    families.push(family("Public Bare", "CC0", "cc0bare", None));
+    families.push(family("Secret Face", "Proprietary", "secret", Some(licence("secret/LICENSE.txt"))));
+    let index = Index::from_host_bytes(v.to_string().as_bytes(), "page").unwrap();
+    for kept in ["Test Sans", "Test Var", "Public Face", "Vera Face"] {
+        assert!(index.family(kept).is_some(), "{kept}");
+    }
+    for left_out in ["Vera Bare", "Public Bare", "Secret Face"] {
+        assert!(index.family(left_out).is_none(), "{left_out}");
+    }
+    let public = index.family("Public Face").unwrap();
+    assert_eq!((public.license.as_str(), public.license_file_name()), ("CC0", Some("LICENSE.txt")));
+    assert_eq!(index.family("Vera Face").unwrap().license, "BITSTREAM-VERA");
+    assert_eq!(index.license_urls(public), ["https://fonts.host.example/files/cc0/LICENSE.txt"]);
+    let warnings = &index.sources()[0].warnings;
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("Secret Face") && w.contains("Proprietary")));
+    assert!(warnings.iter().any(|w| w.contains("Vera Bare") && w.contains("license_file")));
+}
+
+#[test]
 fn a_host_index_is_refused_whole_by_the_rules_of_a_users() {
     let good = host_index();
     let with = |edit: &dyn Fn(&mut serde_json::Value)| {
