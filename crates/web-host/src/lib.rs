@@ -24,6 +24,9 @@
 //! ([`FontIndex`]); it does not parse an index, so the app checks each one itself
 //! (`craft-font-store`'s `Index::from_user_bytes` rules) and takes the whole list or none of it.
 //! The bridge drops a list it refuses whole, as it drops any malformed message.
+//! Each `fonts` message gives the host's whole set and replaces the set it gave before: a host adds
+//! an index by sending its set again with it, and an index it leaves out is gone. When messages
+//! come faster than an app reads their indexes, the last one wins.
 //!
 //! A host answers `saved` only for a `save` that carries an `id`; an app that sends none treats a
 //! save as done once it is posted. Fields marked `?` are optional, so the bridges shipped before
