@@ -10,12 +10,20 @@
 //! | `host` | host → app | `version`, `handoff?` (`true`: the host routes hand-offs) |
 //! | `open` | host → app | `name`, and `bytes` or `file` + `size` |
 //! | `attach-pdf` | host → app | `name`, `bytes`, `page` (from 1), `insertion` ([x,y,z]), `width`, `height` in drawing units |
+//! | `fonts` | host → app | `indexes`: up to [`MAX_FONT_INDEXES`] entries, each `{bytes}` or `{url, sha256}` (see [`FontIndex`]) |
 //! | `save` | app → host | `name`, `bytes`, `id?`, `saveAs?` |
 //! | `saved` | host → app | `id` |
 //! | `dirty` | app → host | `dirty` |
 //! | `failed` | app → host | `error`, `id?` |
 //! | `handoff` | app → host | `name`, and `bytes` or `file` + `size` |
 //! | `handoff-done` | host → app | `name`, `app` |
+//!
+//! `fonts` hands the app font indexes in craft-font-index format (RFC-0034, storytold/craft-libs#2331).
+//! Only the host sends it: a document, an agent or a script cannot, and the host's sending it is
+//! its consent to fetch from those indexes. The bridge only checks the shape of the message
+//! ([`FontIndex`]); it does not parse an index, so the app checks each one itself
+//! (`craft-font-store`'s `Index::from_user_bytes` rules) and takes the whole list or none of it.
+//! The bridge drops a list it refuses whole, as it drops any malformed message.
 //!
 //! A host answers `saved` only for a `save` that carries an `id`; an app that sends none treats a
 //! save as done once it is posted. Fields marked `?` are optional, so the bridges shipped before
@@ -41,6 +49,72 @@ pub const VERSION: &str = "1";
 
 /// Longest file name taken from a host or put in a message, in characters.
 pub const MAX_NAME_CHARS: usize = 255;
+
+/// The most indexes one `fonts` message may carry.
+pub const MAX_FONT_INDEXES: usize = 16;
+
+/// The most bytes one index's `bytes` may hold (the size `craft-font-store` reads an index up to).
+pub const MAX_FONT_INDEX_BYTES: usize = 32 << 20;
+
+/// The longest index URL taken, in bytes.
+pub const MAX_FONT_INDEX_URL_BYTES: usize = 2048;
+
+/// A font index a host gives, checked for shape only: the app parses it and refuses a bad one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontIndex {
+    /// An index in craft-font-index format (JSON or gzipped JSON), at most [`MAX_FONT_INDEX_BYTES`].
+    Bytes(Vec<u8>),
+    /// An index to fetch: an `https` URL and the lowercase hex sha256 of the file there.
+    Url { url: String, sha256: String },
+}
+
+/// Why a `fonts` message is refused. The whole message is: nothing is taken from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontsProblem {
+    /// `indexes` is missing or not an array.
+    NotAList,
+    /// More than [`MAX_FONT_INDEXES`] entries.
+    TooMany,
+    /// An entry that is not an object with exactly one of `bytes` and `url` (`sha256` goes with `url`).
+    BadEntry,
+    /// `bytes` over [`MAX_FONT_INDEX_BYTES`].
+    TooLarge,
+    /// A `url` that is not `https://` with a host, or is too long or holds spaces or control characters.
+    BadUrl,
+    /// A `sha256` that is not 64 lowercase hex digits.
+    BadSha256,
+}
+
+impl FontIndex {
+    /// An index by its bytes; `len` is checked before the bytes are copied (see [`check_font_index_len`]).
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, FontsProblem> {
+        check_font_index_len(bytes.len())?;
+        Ok(Self::Bytes(bytes))
+    }
+
+    /// An index by its `https` URL and the sha256 of the file there.
+    pub fn from_url(url: &str, sha256: &str) -> Result<Self, FontsProblem> {
+        let rest = url.strip_prefix("https://").ok_or(FontsProblem::BadUrl)?;
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        if url.len() > MAX_FONT_INDEX_URL_BYTES || host.is_empty() || host.contains('@') || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return Err(FontsProblem::BadUrl);
+        }
+        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Err(FontsProblem::BadSha256);
+        }
+        Ok(Self::Url { url: url.to_string(), sha256: sha256.to_string() })
+    }
+}
+
+/// Refuse an index of `len` bytes over [`MAX_FONT_INDEX_BYTES`], before it is copied.
+pub fn check_font_index_len(len: usize) -> Result<(), FontsProblem> {
+    if len > MAX_FONT_INDEX_BYTES { Err(FontsProblem::TooLarge) } else { Ok(()) }
+}
+
+/// Refuse a list of `count` entries over [`MAX_FONT_INDEXES`], before any is read.
+pub fn check_font_index_count(count: usize) -> Result<(), FontsProblem> {
+    if count > MAX_FONT_INDEXES { Err(FontsProblem::TooMany) } else { Ok(()) }
+}
 
 /// How a page hosts the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +157,7 @@ pub enum Incoming {
     Host,
     Open,
     AttachPdf,
+    Fonts,
     Saved,
     HandoffDone,
 }
@@ -100,13 +175,14 @@ impl Outgoing {
 }
 
 impl Incoming {
-    pub const ALL: [Self; 5] = [Self::Host, Self::Open, Self::AttachPdf, Self::Saved, Self::HandoffDone];
+    pub const ALL: [Self; 6] = [Self::Host, Self::Open, Self::AttachPdf, Self::Fonts, Self::Saved, Self::HandoffDone];
 
     pub const fn kind(self) -> &'static str {
         match self {
             Self::Host => "host",
             Self::Open => "open",
             Self::AttachPdf => "attach-pdf",
+            Self::Fonts => "fonts",
             Self::Saved => "saved",
             Self::HandoffDone => "handoff-done",
         }
@@ -210,6 +286,67 @@ mod tests {
             assert_eq!(Incoming::parse("gridcraft", &message_type("gridcraft", kind.kind())), Some(kind));
         }
         assert_eq!(message_type("cadcraft", Outgoing::Handoff.kind()), "cadcraft:handoff");
+    }
+
+    #[test]
+    fn fonts_is_an_incoming_kind_only() {
+        assert_eq!(Incoming::parse("pdfcraft", "pdfcraft:fonts"), Some(Incoming::Fonts));
+        assert_eq!(Incoming::Fonts.kind(), "fonts");
+    }
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn both_forms_of_a_font_index_are_taken() {
+        assert_eq!(FontIndex::from_bytes(vec![1, 2, 3]), Ok(FontIndex::Bytes(vec![1, 2, 3])));
+        assert_eq!(FontIndex::from_bytes(vec![0; MAX_FONT_INDEX_BYTES]).map(|_| ()), Ok(()));
+        assert_eq!(
+            FontIndex::from_url("https://fonts.example/index.json?v=2", SHA),
+            Ok(FontIndex::Url { url: "https://fonts.example/index.json?v=2".into(), sha256: SHA.into() })
+        );
+        assert_eq!(check_font_index_count(MAX_FONT_INDEXES), Ok(()));
+    }
+
+    #[test]
+    fn a_font_index_over_a_bound_is_refused() {
+        assert_eq!(check_font_index_count(MAX_FONT_INDEXES + 1), Err(FontsProblem::TooMany));
+        assert_eq!(check_font_index_len(MAX_FONT_INDEX_BYTES), Ok(()));
+        assert_eq!(check_font_index_len(MAX_FONT_INDEX_BYTES + 1), Err(FontsProblem::TooLarge));
+        assert_eq!(FontIndex::from_bytes(vec![0; MAX_FONT_INDEX_BYTES + 1]), Err(FontsProblem::TooLarge));
+        let long = format!("https://a.example/{}", "x".repeat(MAX_FONT_INDEX_URL_BYTES));
+        assert_eq!(FontIndex::from_url(&long, SHA), Err(FontsProblem::BadUrl));
+    }
+
+    #[test]
+    fn only_an_https_url_with_a_host_is_taken() {
+        for url in [
+            "http://fonts.example/i.json",
+            "HTTPS://fonts.example/i.json",
+            "ftp://fonts.example/i.json",
+            "//fonts.example/i.json",
+            "fonts.example/i.json",
+            "file:///etc/passwd",
+            "data:application/json,{}",
+            "javascript:alert(1)",
+            "https://",
+            "https:///i.json",
+            "https://?x=1",
+            "https://user:pw@fonts.example/i.json",
+            "https://fonts.example/a b.json",
+            "https://fonts.example/a\nb.json",
+            "https://fonts.example/\u{0}",
+            "",
+        ] {
+            assert_eq!(FontIndex::from_url(url, SHA), Err(FontsProblem::BadUrl), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn a_sha256_is_sixty_four_lowercase_hex_digits() {
+        let url = "https://fonts.example/i.json";
+        for sha in ["", "abc", &SHA[1..], &format!("{SHA}0"), &SHA.to_uppercase(), &format!("g{}", &SHA[1..]), &format!(" {}", &SHA[1..])] {
+            assert_eq!(FontIndex::from_url(url, sha), Err(FontsProblem::BadSha256), "{sha:?}");
+        }
     }
 
     #[test]

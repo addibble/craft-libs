@@ -14,12 +14,16 @@ The crate has two parts:
 | `ready` | app → host | `version`, `appVersion?`, `file?` | the app can take a document; `file: true` means it reads a `File`/`Blob` in slices |
 | `host` | host → app | `version`, `handoff?` | what the host supports; `handoff: true` means it routes hand-offs |
 | `open` | host → app | `name`, and `bytes` or `file` + `size` | open a document as File › Open would |
+| `attach-pdf` | host → app | `name`, `bytes`, `page`, `insertion`, `width`, `height` | attach one PDF page to the drawing |
+| `fonts` | host → app | `indexes` | font indexes the host supplies: each `{bytes}` or `{url, sha256}` |
 | `save` | app → host | `name`, `bytes`, `id?`, `saveAs?` | Save, Save As or Export: the host stores the file |
 | `saved` | host → app | `id` | the save with that `id` is stored; the app clears dirty |
 | `dirty` | app → host | `dirty` | unsaved changes appeared or went away |
 | `failed` | app → host | `error`, `id?` | a document or a save could not be taken |
 | `handoff` | app → host | `name`, and `bytes` or `file` + `size` | this file belongs to another app |
 | `handoff-done` | host → app | `name`, `app` | the host gave it to the app that edits it |
+
+`fonts` (RFC-0034, storytold/craft-libs#2331) hands an app indexes in craft-font-index format; the app fetches a face from one only when type in a document uses it. `indexes` holds up to 16 entries, each either `{bytes}` (an `ArrayBuffer` or `Uint8Array`, JSON or gzipped JSON, at most 32 MiB) or `{url, sha256}` (an `https` URL and the lowercase hex sha256 of the index file there). The bridge checks only that shape and drops the whole message when any entry is wrong (a missing or non-array `indexes`, too many entries, an entry with neither or both forms, a non-`https` URL, a sha256 that is not 64 lowercase hex digits, over-large bytes); it does not parse an index, so the app checks each one itself (version, URL templates, safe paths, sha256s, sizes) and takes the list whole or not at all. Only the host sends `fonts`: a host's sending it is its consent to fetch from those indexes, and a document, an agent or a script cannot send it. There is no answer message; an app reports a list it refuses with `failed`.
 
 With `?host=parent` a message is an object with `type` (`pdfcraft:open`) and the fields, sent with same-origin `postMessage`; `bytes` go as a transferred `ArrayBuffer`. With `data-host="page"` it is a `CustomEvent` of that type on the canvas, with the fields in `detail`.
 

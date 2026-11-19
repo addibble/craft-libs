@@ -14,7 +14,9 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast as _, JsValue};
 use web_sys::js_sys;
 
-use crate::{Inbox, Incoming, Mode, Outgoing, VERSION, file_name, message_type};
+use crate::{
+    FontIndex, FontsProblem, Inbox, Incoming, Mode, Outgoing, VERSION, check_font_index_count, check_font_index_len, file_name, message_type,
+};
 
 /// A file the host passes in, not yet copied into the app's memory: check its size first.
 pub enum FileData {
@@ -43,6 +45,9 @@ pub enum Message {
     /// Attach one PDF page to the current drawing without opening another document.
     /// Bytes stay a view until the app checks their length. Page numbers start at one.
     AttachPdf { name: String, bytes: js_sys::Uint8Array, page: u32, insertion: [f64; 3], width: f64, height: f64 },
+    /// Font indexes the host supplies (RFC-0034), each checked for shape only: the app checks the
+    /// indexes' contents itself and takes the list whole or not at all. Only the host sends this.
+    Fonts { indexes: Vec<FontIndex> },
     /// The save with this `id` is stored.
     Saved { id: String },
     /// The host gave a handed-off file to the app that edits it.
@@ -237,11 +242,47 @@ fn read(kind: Incoming, data: &JsValue) -> Option<Message> {
                 height,
             }
         }
+        Incoming::Fonts => Message::Fonts { indexes: font_indexes(&get(data, "indexes")).ok()? },
         Incoming::Saved => Message::Saved { id: string(data, "id")? },
         Incoming::HandoffDone => {
             Message::HandoffDone { name: string(data, "name").unwrap_or_default(), app: string(data, "app").unwrap_or_default() }
         }
     })
+}
+
+/// The `indexes` of a `fonts` message: all of them, or the problem with the first one refused.
+fn font_indexes(list: &JsValue) -> Result<Vec<FontIndex>, FontsProblem> {
+    let list = list.dyn_ref::<js_sys::Array>().ok_or(FontsProblem::NotAList)?;
+    check_font_index_count(list.length() as usize)?;
+    list.iter().map(|entry| font_index(&entry)).collect()
+}
+
+fn font_index(entry: &JsValue) -> Result<FontIndex, FontsProblem> {
+    if !entry.is_object() {
+        return Err(FontsProblem::BadEntry);
+    }
+    let (bytes, url, sha256) = (get(entry, "bytes"), get(entry, "url"), get(entry, "sha256"));
+    match (bytes.is_undefined() || bytes.is_null(), url.is_undefined() || url.is_null()) {
+        (false, true) if sha256.is_undefined() || sha256.is_null() => {
+            let array = if let Some(array) = bytes.dyn_ref::<js_sys::Uint8Array>() {
+                array.clone()
+            } else if bytes.is_instance_of::<js_sys::ArrayBuffer>() {
+                js_sys::Uint8Array::new(&bytes)
+            } else {
+                return Err(FontsProblem::BadEntry);
+            };
+            // The length is checked before the copy.
+            check_font_index_len(array.length() as usize)?;
+            FontIndex::from_bytes(array.to_vec())
+        }
+        (true, false) => {
+            let (Some(url), Some(sha256)) = (url.as_string(), sha256.as_string()) else {
+                return Err(if url.is_string() { FontsProblem::BadSha256 } else { FontsProblem::BadUrl });
+            };
+            FontIndex::from_url(&url, &sha256)
+        }
+        _ => Err(FontsProblem::BadEntry),
+    }
 }
 
 /// `file` (a `Blob`; its `size` field is ignored for the Blob's own) or `bytes` (an `ArrayBuffer` or `Uint8Array`), not copied.
@@ -359,6 +400,69 @@ mod tests {
             js_sys::Reflect::set(&data, &key.into(), &value).unwrap();
             assert!(read(Incoming::AttachPdf, &data).is_none(), "invalid {key} must be dropped");
         }
+    }
+
+    fn index_list(entries: &[JsValue]) -> JsValue {
+        let list = js_sys::Array::new();
+        for entry in entries {
+            list.push(entry);
+        }
+        obj(&[("indexes", list.into())])
+    }
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn fonts(data: &JsValue) -> Option<Vec<FontIndex>> {
+        match read(Incoming::Fonts, data) {
+            Some(Message::Fonts { indexes }) => Some(indexes),
+            _ => None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn fonts_take_both_forms_of_index() {
+        let from_url = obj(&[("url", "https://fonts.example/i.json".into()), ("sha256", SHA.into())]);
+        let array = js_sys::Uint8Array::from(&[1u8, 2, 3][..]);
+        let data = index_list(&[from_url, obj(&[("bytes", array.into())]), obj(&[("bytes", buffer(2).into())])]);
+        let indexes = fonts(&data).expect("a valid list is read");
+        assert_eq!(
+            indexes,
+            [
+                FontIndex::Url { url: "https://fonts.example/i.json".into(), sha256: SHA.into() },
+                FontIndex::Bytes(vec![1, 2, 3]),
+                FontIndex::Bytes(vec![0, 0]),
+            ]
+        );
+        assert_eq!(fonts(&index_list(&[])), Some(Vec::new()), "an empty list is a list");
+    }
+
+    #[wasm_bindgen_test]
+    fn a_fonts_message_with_one_bad_entry_takes_nothing() {
+        let good = || obj(&[("url", "https://fonts.example/i.json".into()), ("sha256", SHA.into())]);
+        for data in [
+            obj(&[]),
+            obj(&[("indexes", "https://fonts.example/i.json".into())]),
+            obj(&[("indexes", obj(&[]))]),
+            JsValue::NULL,
+            index_list(&[good(), JsValue::from_str("a string")]),
+            index_list(&[good(), JsValue::NULL]),
+            index_list(&[good(), obj(&[])]),
+            index_list(&[good(), obj(&[("bytes", "text".into())])]),
+            index_list(&[good(), obj(&[("bytes", buffer(1).into()), ("url", "https://a.example/i".into()), ("sha256", SHA.into())])]),
+            index_list(&[good(), obj(&[("bytes", buffer(1).into()), ("sha256", SHA.into())])]),
+            index_list(&[good(), obj(&[("url", "https://a.example/i".into())])]),
+            index_list(&[good(), obj(&[("sha256", SHA.into())])]),
+            index_list(&[good(), obj(&[("url", "http://a.example/i".into()), ("sha256", SHA.into())])]),
+            index_list(&[good(), obj(&[("url", 3.into()), ("sha256", SHA.into())])]),
+            index_list(&[good(), obj(&[("url", "https://a.example/i".into()), ("sha256", SHA.to_uppercase().into())])]),
+            index_list(&[good(), obj(&[("url", "https://a.example/i".into()), ("sha256", 3.into())])]),
+            index_list(&[good(), obj(&[("bytes", buffer(crate::MAX_FONT_INDEX_BYTES as u32 + 1).into())])]),
+        ] {
+            assert!(fonts(&data).is_none());
+        }
+        let many: Vec<JsValue> = (0..=crate::MAX_FONT_INDEXES).map(|_| good()).collect();
+        assert!(fonts(&index_list(&many)).is_none(), "too many entries");
+        assert_eq!(fonts(&index_list(&many[1..])).map(|i| i.len()), Some(crate::MAX_FONT_INDEXES));
     }
 
     fn buffer(len: u32) -> js_sys::ArrayBuffer {
