@@ -62,8 +62,8 @@ pub enum VerifyError {
         /// The file's, or `(none)`.
         found: String,
     },
-    /// The file is a collection, which `verify_face` doesn't check and so refuses.
-    #[error("the file is a font collection, which verify_face doesn't check")]
+    /// The file is a collection, which an entry can't name a face of.
+    #[error("the file is a font collection, and a host's index can't name one of its faces")]
     Collection,
     /// The entry lists more style names than the format keeps (256), whatever the file gives.
     #[error("the entry lists {count} style names, more than the 256 the format keeps")]

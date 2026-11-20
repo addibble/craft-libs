@@ -898,6 +898,8 @@ fn a_collection_is_refused_by_verify_face() {
     bytes.extend_from_slice(&[0, 2, 0, 0, 0, 0, 0, 0]);
     let (family, file) = entry_for(&index, "Bold", &bytes);
     assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Collection));
+    // Its message reaches users, so it names no function.
+    assert!(!VerifyError::Collection.to_string().contains("verify_face"));
     // The size and sha256 are checked first.
     let (_, mut other) = entry_for(&index, "Bold", &bytes);
     other.size += 1;
