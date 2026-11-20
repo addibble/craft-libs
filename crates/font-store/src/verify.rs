@@ -305,8 +305,7 @@ fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
         return Err(VerifyError::TooManyNames { count: file.names.len() });
     }
     // Every record of the typographic subfamily (ID 17), whatever platform and language: an
-    // index's builder lists the first non-empty record, the only rule that always agrees with this
-    // check. The
+    // index's builder lists the first non-empty record, which always agrees with this check. The
     // subfamily (ID 2) only where a builder falls back to it: no ID 17, or an empty first or
     // English one. A face whose ID 17 says W6 isn't Regular because its ID 2 says so.
     let typographic = font.localized_strings(StringId::TYPOGRAPHIC_SUBFAMILY_NAME);

@@ -973,15 +973,15 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     // Another style name fails even with the entry's sha256, as a lookalike would.
     let (family, file) = entry(&plain, &["Lumberboy"]);
     assert!(matches!(verify_face(&family, &file, &plain), Err(VerifyError::Names { .. })));
-    // Every record of ID 17 and ID 2 is the face's, whichever one an index's builder picked: ID 2
-    // when the first ID 17 record is empty, or a later ID 17 record.
+    // verify_face accepts any record of ID 17, and of ID 2 when the first ID 17 record is empty: here
+    // both ID 2's Bold and the later ID 17 record are the face's.
     let blank_first = font_as(&Spec { more_names: &[(3, 17, 0x409, ""), (3, 17, 0x40C, "Lumberboy")], ..bold });
     let (family, file) = entry(&blank_first, &["Bold"]);
     assert_eq!(verify_face(&family, &file, &blank_first), Ok(()));
     let (family, file) = entry(&blank_first, &["Lumberboy"]);
     assert_eq!(verify_face(&family, &file, &blank_first), Ok(()));
     // A legacy font whose Mac and Windows ID 2 differ ("Light" on the Mac record, which sorts
-    // first; "Regular" in Windows English, which a builder may prefer): either name is the face's.
+    // first; "Regular" in Windows English): verify_face accepts either as the face's.
     let legacy = font_as(&Spec { more_names: &[(1, 2, 0, "Light")], ..Spec::default() });
     let regular_entry = |names: &[&str]| {
         let (family, mut file) = entry_for(&index, "Regular", &legacy);
