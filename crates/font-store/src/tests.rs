@@ -910,6 +910,38 @@ fn a_host_index_leaves_out_collections_with_a_warning() {
     assert!(index.family("Test Var").is_none() && index.family("Test Sans").is_some());
     assert!(index.sources()[0].warnings.iter().any(|w| w.contains("Test Var") && w.contains("collection")));
     assert!(user(&bytes).family("Test Var").is_some());
+    // The warning names the first three collections and counts the rest.
+    let many = |n: usize| {
+        let mut v = host_index();
+        let mut fam = v["families"][0].clone();
+        fam["family"] = json!("Test Many");
+        let file = fam["files"][0].clone();
+        fam["files"] = json!(
+            (0..n)
+                .map(|i| {
+                    let mut f = file.clone();
+                    f["path"] = json!(format!("ofl/testmany/Many-{i}.ttc"));
+                    f
+                })
+                .collect::<Vec<_>>()
+        );
+        v["families"].as_array_mut().unwrap().push(fam);
+        v.to_string().into_bytes()
+    };
+    let index = Index::from_host_bytes(&many(4), "page").unwrap();
+    let warning = index.sources()[0].warnings.iter().find(|w| w.contains("Test Many")).unwrap();
+    assert_eq!(warning.matches(".ttc").count(), 3, "{warning}");
+    assert!(warning.contains("Many-0.ttc") && warning.contains("Many-2.ttc") && warning.ends_with(" and 1 more)"), "{warning}");
+    // Every file counts toward the limit, collections too: the user's rule, exactly.
+    let limit = 12;
+    crate::source::TEST_MAX_FILES.set(limit);
+    let over = many(limit);
+    assert!(Index::from_host_bytes(&over, "page").is_err());
+    assert!(Index::from_user_bytes(&over, "https://fonts.host.example/index.json").is_err());
+    let base: usize = host_index_read().families().iter().map(|f| f.files.len()).sum();
+    let at = many(limit - base);
+    Index::from_host_bytes(&at, "page").unwrap();
+    assert!(Index::from_user_bytes(&at, "https://fonts.host.example/index.json").is_ok());
 }
 
 /// The Test Sans family of [`host_index`] and its `style` file's entry, made to describe `bytes`
@@ -923,7 +955,7 @@ fn entry_for(index: &Index, style: &str, bytes: &[u8]) -> (Family, FontFile) {
 }
 
 // Invariant: a collection is refused by `verify_face` even when its size and sha256 are the
-// entry's (breaks if: the `ttcf` check is dropped, so a collection's first face could pass).
+// entry's (breaks if: the `ttcf` check is dropped, so the error becomes `NotAFont` instead of `Collection`).
 #[test]
 fn a_collection_is_refused_by_verify_face() {
     let index = host_index_read();

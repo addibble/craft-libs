@@ -543,8 +543,8 @@ impl Index {
     }
 
     /// Reads an index a build's host gives (JSON or gzipped JSON), checked by the rules
-    /// [`Index::from_user_bytes`] applies, with one exception: a `.ttc` or `.otc` file is left out
-    /// with a warning, and a family with no other file with it, since `verify_face` refuses every
+    /// [`Index::from_user_bytes`] applies, with one exception: a file whose path ends in `.ttc` or `.otc`,
+    /// ignoring case, is left out with a warning, and a family with no other file with it, since `verify_face` refuses every
     /// collection. Not curated, whatever its file says, and its source ID
     /// `host:<id>`, so it can't stand in for a built-in or a `user:` source. `id` is the host's
     /// name for the index: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `.`. The index's file
