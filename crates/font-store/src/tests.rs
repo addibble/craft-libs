@@ -1011,6 +1011,34 @@ fn without_postscript_names_a_style_is_one_of_the_files_readings() {
     assert_eq!(verify_face(&family, &file, &bytes), Ok(()));
 }
 
+// Invariant: a style error names only the attributes compared and failed, not one an axis
+// exempts (breaks if: the message lists the weight, width and italic flag whatever differs).
+#[test]
+fn a_style_error_names_only_what_was_compared_and_failed() {
+    let index = host_index_read();
+    let check = |spec: Spec<'_>, edit: &dyn Fn(&mut FontFile)| {
+        let bytes = font_as(&spec);
+        let (family, mut file) = entry_for(&index, "Regular", &bytes);
+        file.postscript.clear();
+        edit(&mut file);
+        verify_face(&family, &file, &bytes)
+    };
+    let spec = Spec::default;
+    // A `wdth` axis exempts the width: only the weight is named.
+    let axes: &[(&[u8; 4], f32, f32, f32)] = &[(b"wdth", 50.0, 100.0, 200.0)];
+    let width_axis = |f: &mut FontFile| {
+        (f.weight, f.width) = (100, 75.0);
+        f.axes = vec![Axis { tag: "wdth".into(), min: 50.0, max: 200.0 }];
+    };
+    let Err(VerifyError::Style { expected, found }) = check(Spec { weight: 400, axes, ..spec() }, &width_axis) else { panic!("not a style") };
+    assert_eq!((expected.as_str(), found.as_str()), ("weight 100", "weight 400"));
+    // Both attributes differ: both are named.
+    let Err(VerifyError::Style { expected, found }) = check(Spec { width_class: 3, ..spec() }, &|f| (f.weight, f.width) = (700, 100.0)) else {
+        panic!("not a style")
+    };
+    assert_eq!((expected.as_str(), found.as_str()), ("weight 700, width 100%", "weight 400, width 75%"));
+}
+
 // Invariant: every style name an entry lists is one the face gives, with or without PostScript
 // names listed, and a named instance's counts, up to the format's 256 (breaks if: the check runs
 // only on one branch, the instances are not read or are cut short, or one listed name is enough).

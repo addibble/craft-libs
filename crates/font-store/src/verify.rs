@@ -41,7 +41,7 @@ pub enum VerifyError {
     /// The font isn't the style the entry claims.
     #[error("the file is {found}, not {expected}")]
     Style {
-        /// What the entry claims: `weight 700, upright, width 100%`.
+        /// What the entry claims, of the attributes that differ: `weight 700, width 100%`.
         expected: String,
         /// What the file is.
         found: String,
@@ -272,21 +272,24 @@ fn check_style(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
         None => vec![mac_italic],
     };
 
-    let describe = |weights: &[u16], widths: &[f32], italics: &[bool]| {
-        let join = |v: Vec<String>| v.join(" or ");
-        format!(
-            "weight {}, {}, width {}%",
-            join(weights.iter().map(u16::to_string).collect()),
-            join(italics.iter().map(|&i| if i { "italic" } else { "upright" }.to_string()).collect()),
-            join(widths.iter().map(f32::to_string).collect()),
-        )
-    };
-    let differs = (!covers("wght") && !weights.contains(&file.weight))
-        || (!covers("wdth") && !widths.iter().any(|w| (w - file.width).abs() <= WIDTH_TOLERANCE))
-        || (!covers("ital") && !italics.contains(&file.is_italic()));
-    if differs {
-        let expected = describe(&[file.weight], &[file.width], &[file.is_italic()]);
-        return Err(VerifyError::Style { expected, found: describe(&weights, &widths, &italics) });
+    // Only the attributes compared and failed are named: one an axis exempts is not blamed.
+    let join = |v: Vec<String>| v.join(" or ");
+    let (mut expected, mut found) = (Vec::new(), Vec::new());
+    if !covers("wght") && !weights.contains(&file.weight) {
+        expected.push(format!("weight {}", file.weight));
+        found.push(format!("weight {}", join(weights.iter().map(u16::to_string).collect())));
+    }
+    if !covers("wdth") && !widths.iter().any(|w| (w - file.width).abs() <= WIDTH_TOLERANCE) {
+        expected.push(format!("width {}%", file.width));
+        found.push(format!("width {}%", join(widths.iter().map(f32::to_string).collect())));
+    }
+    if !covers("ital") && !italics.contains(&file.is_italic()) {
+        let word = |i: bool| if i { "italic" } else { "upright" };
+        expected.push(word(file.is_italic()).to_string());
+        found.push(join(italics.iter().map(|&i| word(i).to_string()).collect()));
+    }
+    if !expected.is_empty() {
+        return Err(VerifyError::Style { expected: expected.join(", "), found: found.join(", ") });
     }
 
     Ok(())
