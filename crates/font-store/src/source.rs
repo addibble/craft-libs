@@ -265,6 +265,8 @@ struct Ctx<'a> {
     slug: &'a str,
     google: bool,
     curated: bool,
+    /// Whether a build's host gave the index.
+    host: bool,
     templates: &'a [String],
     repo: Option<&'a str>,
     git_ref: Option<&'a str>,
@@ -349,6 +351,7 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
         slug: &slug,
         google: outside.is_none() && declared == GOOGLE_FONTS,
         curated,
+        host: matches!(origin, Origin::Host { .. }),
         templates: &templates,
         repo: raw.repo.as_deref(),
         git_ref: raw.git_ref.as_deref(),
@@ -459,6 +462,9 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
         let file = check_path(&f.path)?.to_ascii_lowercase();
         if ![".ttf", ".otf", ".ttc", ".otc"].iter().any(|ext| file.ends_with(ext)) {
             return invalid(format!("`{}` is not a font file", short(&f.path)));
+        }
+        if ctx.host && [".ttc", ".otc"].iter().any(|ext| file.ends_with(ext)) {
+            return invalid(format!("`{}` is a font collection, which a host's index can't list", short(&f.path)));
         }
         if !names.insert(file) {
             return invalid(format!("`{}` is listed twice", short(&f.path)));

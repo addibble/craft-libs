@@ -810,6 +810,20 @@ fn a_host_index_keeps_cc0_and_bitstream_vera_families_and_leaves_out_other_licen
     assert!(warnings.iter().any(|w| w.contains("Vera Bare") && w.contains("license_file")));
 }
 
+// Invariant: a host's index can't list a collection, since `verify_face` refuses every one (breaks
+// if: the host check is dropped from `check_family`). A user's or built-in index may.
+#[test]
+fn a_host_index_cant_list_a_collection() {
+    for path in ["ofl/testsans/TestSans-Bold.ttc", "ofl/testsans/TestSans-Bold.OTC"] {
+        let mut v = host_index();
+        v["families"][0]["files"][1]["path"] = json!(path);
+        let bytes = v.to_string().into_bytes();
+        let err = Index::from_host_bytes(&bytes, "page").unwrap_err();
+        assert!(matches!(err, IndexError::Invalid(_)) && err.to_string().contains("collection"), "{err}");
+        assert!(Index::from_user_bytes(&bytes, "https://fonts.host.example/index.json").is_ok(), "{path}");
+    }
+}
+
 /// The Test Sans family of [`host_index`] and its `style` file's entry, made to describe `bytes`
 /// instead (its size and sha256), as an index that lists the wrong file would.
 fn entry_for(index: &Index, style: &str, bytes: &[u8]) -> (Family, FontFile) {
