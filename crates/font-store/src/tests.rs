@@ -924,12 +924,22 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     );
     let (family, file) = regular_entry(&["Regular"]);
     assert_eq!(verify_face(&family, &file, &regular), Ok(()));
-    // The typographic subfamily (ID 17) and the subfamily (ID 2) are both the face's.
+    // The typographic subfamily (ID 17) is the face's, and then the subfamily (ID 2) isn't.
     let split = font_as(&Spec { style: "Bold", typographic_style: Some("Lumberboy"), ..bold });
     let (family, file) = entry(&split, &["Lumberboy"]);
     assert_eq!(verify_face(&family, &file, &split), Ok(()));
     let (family, file) = entry(&split, &["Bold"]);
-    assert_eq!(verify_face(&family, &file, &split), Ok(()));
+    assert_eq!(verify_face(&family, &file, &split), Err(VerifyError::Names { expected: vec!["Bold".into()], found: "Bold".into() }));
+    // So W0, W3 and W6 faces whose ID 2 says Regular aren't Regular.
+    for (w, weight) in [("W0", 100), ("W3", 300), ("W6", 600)] {
+        let face = font_as(&Spec { style: "Regular", weight, typographic_style: Some(w), ..Spec::default() });
+        let (family, mut file) = entry_for(&index, "Regular", &face);
+        file.weight = weight;
+        file.names = vec!["Regular".into()];
+        assert_eq!(verify_face(&family, &file, &face), Err(VerifyError::Names { expected: vec!["Regular".into()], found: "Regular".into() }), "{w}");
+        file.names = vec![w.into()];
+        assert_eq!(verify_face(&family, &file, &face), Ok(()), "{w}");
+    }
     // Another style name fails even with the entry's sha256, as a lookalike would.
     let (family, file) = entry(&plain, &["Lumberboy"]);
     assert!(matches!(verify_face(&family, &file, &plain), Err(VerifyError::Names { .. })));

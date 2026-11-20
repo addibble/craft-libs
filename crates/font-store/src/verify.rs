@@ -206,15 +206,17 @@ fn check_face(family: &Family, file: &FontFile, font: &FontRef<'_>) -> Result<()
     }
 
     if !file.names.is_empty() {
-        // Every record of its style names, whatever platform and language: an index's builder may
-        // pick any of them (the first record, or Windows English first), so each is the face's.
+        // Every record of the typographic subfamily (ID 17), whatever platform and language: an
+        // index's builder may pick any (the first record, or Windows English first). The
+        // subfamily (ID 2) only where a builder falls back to it: no ID 17, or an empty first or
+        // English one. A face whose ID 17 says W6 isn't Regular because its ID 2 says so.
+        let typographic = font.localized_strings(StringId::TYPOGRAPHIC_SUBFAMILY_NAME);
+        let first_empty = typographic.clone().next().is_none_or(|s| s.to_string().is_empty());
+        let english_empty = typographic.english_or_first().is_some_and(|s| s.to_string().is_empty());
+        let subfamily = if first_empty || english_empty { names(font, StringId::SUBFAMILY_NAME) } else { vec![] };
         let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).flat_map(|i| names(font, i.subfamily_name_id()));
-        let have: Vec<String> = names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME)
-            .into_iter()
-            .chain(names(font, StringId::SUBFAMILY_NAME))
-            .chain(instances)
-            .take(MAX_NAME_RECORDS * 8)
-            .collect();
+        let have: Vec<String> =
+            names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME).into_iter().chain(subfamily).chain(instances).take(MAX_NAME_RECORDS * 8).collect();
         // Every listed name, not one of them: a name the face doesn't give would find it by a
         // style it isn't.
         if let Some(stray) = file.names.iter().find(|n| !have.contains(n)) {
