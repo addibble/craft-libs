@@ -753,20 +753,36 @@ fn host_index_read() -> Index {
 // read a host's index too.
 #[test]
 fn a_host_index_is_never_curated_and_cant_shadow_another_source() {
-    let mut v = host_index();
+    let v = host_index();
     let index = Index::from_host_bytes(v.to_string().as_bytes(), "page.1").unwrap();
     let source = &index.sources()[0];
     // The file's `curated: true` and its ID `fonts-host` are not kept.
     assert_eq!((source.id.as_str(), source.curated, source.user_url.as_deref()), ("host:page.1", false, None));
     let sans = index.family("Test Sans").unwrap();
     assert_eq!((sans.source.as_str(), sans.is_curated()), ("host:page.1", false));
-    // A host's index that declares a built-in source's ID is still its own source.
-    v["source"] = json!(GOOGLE_FONTS);
-    v["source_info"]["id"] = json!(GOOGLE_FONTS);
-    let merged = Index::merge([index_of(&fixture().index).unwrap(), Index::from_host_bytes(v.to_string().as_bytes(), "page.1").unwrap()]);
+    let dir = sans.dir().to_string();
+    assert!(dir.starts_with("host-page-1-") && dir.ends_with("/test-sans"), "{dir}");
+    let face = index.find_face("Test Sans", "Bold").unwrap();
+    assert_eq!(index.file_urls(face.family, face.file), ["https://fonts.host.example/files/ofl/testsans/TestSans-Bold.ttf"]);
+    // Gzipped, the same.
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gz, v.to_string().as_bytes()).unwrap();
+    let zipped = Index::from_host_bytes(&gz.finish().unwrap(), "page.1").unwrap();
+    assert_eq!(zipped.sources()[0].id, "host:page.1");
+    // A host's index that declares a built-in source's ID, or a user's, is still its own source.
+    let mut google = v.clone();
+    google["source"] = json!(GOOGLE_FONTS);
+    google["source_info"]["id"] = json!(GOOGLE_FONTS);
+    let merged = Index::merge([index_of(&fixture().index).unwrap(), Index::from_host_bytes(google.to_string().as_bytes(), "page.1").unwrap()]);
     assert_eq!(merged.sources().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), [GOOGLE_FONTS, "host:page.1"]);
     assert!(merged.problems().is_empty());
+    assert!(merged.family("Test Sans").unwrap().is_curated(), "lookups prefer the built-in source");
     assert!(!merged.family_from("host:page.1", "Test Sans").unwrap().is_curated());
+    // One face at a time is an index too.
+    let mut one = v.clone();
+    one["families"] = json!([v["families"][0]]);
+    one["families"][0]["files"] = json!([v["families"][0]["files"][0]]);
+    assert_eq!(Index::from_host_bytes(one.to_string().as_bytes(), "one").unwrap().families()[0].files.len(), 1);
 }
 
 #[test]
@@ -808,6 +824,45 @@ fn a_host_index_keeps_cc0_and_bitstream_vera_families_and_leaves_out_other_licen
     assert_eq!(warnings.len(), 3, "{warnings:?}");
     assert!(warnings.iter().any(|w| w.contains("Secret Face") && w.contains("Proprietary")));
     assert!(warnings.iter().any(|w| w.contains("Vera Bare") && w.contains("license_file")));
+}
+
+#[test]
+fn a_host_index_is_refused_whole_by_the_rules_of_a_users() {
+    let good = host_index();
+    let with = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = good.clone();
+        edit(&mut v);
+        v.to_string().into_bytes()
+    };
+    let refused = [
+        with(&|v| v["families"][0]["files"][1]["sha256"] = json!("0".repeat(63))),
+        with(&|v| v["families"][0]["files"][1]["sha256"] = json!("A".repeat(64))),
+        with(&|v| v["source_info"]["file_urls"] = json!(["http://fonts.host.example/files/{path}"])),
+        with(&|v| v["source_info"]["file_urls"] = json!(["https://fonts.host.example/files/"])),
+        with(&|v| v["families"][1]["files"][0]["path"] = json!("../outside/Evil.ttf")),
+        with(&|v| v["families"][1]["files"][0]["path"] = json!("/etc/Evil.ttf")),
+        with(&|v| v["families"][1]["files"][0]["path"] = json!("a\\b/Evil.ttf")),
+        with(&|v| v["families"][1]["files"][0]["size"] = json!(0)),
+        with(&|v| v["version"] = json!("2.0")),
+        b"not json".to_vec(),
+    ];
+    for bytes in &refused {
+        assert!(Index::from_host_bytes(bytes, "page").is_err(), "{}", String::from_utf8_lossy(bytes));
+        // The rules are a user's: the same bytes are refused there too.
+        assert!(Index::from_user_bytes(bytes, "https://fonts.host.example/index.json").is_err());
+    }
+    let ok = good.to_string().into_bytes();
+    assert!(Index::from_host_bytes(&ok, "page").is_ok());
+    // The host's own name for the index is checked.
+    for id in ["", ".hidden", "a/b", "a b", "a:b", "é", &"x".repeat(65)] {
+        assert!(matches!(Index::from_host_bytes(&ok, id), Err(IndexError::Invalid(_))), "{id:?}");
+    }
+    assert!(Index::from_host_bytes(&ok, &"x".repeat(64)).is_ok());
+    // Adding nothing: a refused index leaves what merges alone.
+    let before = Index::merge([index_of(&fixture().index).unwrap()]);
+    let merged = Index::merge([before.clone(), Index::from_host_bytes(&refused[0], "page").unwrap_or_default()]);
+    assert_eq!(merged.sources().len(), 1);
+    assert_eq!(merged.families().len(), before.families().len());
 }
 
 // Invariant: a host's index can't list a collection, since `verify_face` refuses every one (breaks
