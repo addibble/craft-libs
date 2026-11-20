@@ -174,10 +174,11 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 ///    listed.
 ///
 /// The work is bounded: one sha256 pass, one table directory, and for each of the name IDs 16, 1,
-/// 6, 17 and 2 and for each of at most 256 named instances' subfamily name IDs, at most 65,535
-/// record headers scanned, at most 64 records decoded and at most 1,025 characters of each; only
-/// names of at most 1,024 characters are compared, and no more than the entry's own at most 256
-/// style names are held.
+/// 6 and 2, for ID 17 (scanned up to three times) and for each of the first 256 named instances'
+/// subfamily name IDs, at most 65,535 record headers scanned, at most 64 records decoded and at
+/// most 1,025 characters of each; only names of at most 1,024 characters are compared, a name past
+/// the first 64 records of its ID is not seen, a file's names come only from its own style name and
+/// the first 256 named instances, and an entry listing more than 256 names is refused.
 pub fn verify_face(family: &Family, file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
     check_bytes(file, bytes)?;
     if bytes.starts_with(b"ttcf") {
@@ -289,6 +290,11 @@ fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
     if file.names.is_empty() {
         return Ok(());
     }
+    // The format keeps at most `MAX_NAMES` names of a file; an entry listing more is not one an
+    // index reader produces.
+    if let Some(extra) = file.names.get(MAX_NAMES) {
+        return Err(VerifyError::Names { found: extra.clone() });
+    }
     // Every record of the typographic subfamily (ID 17), whatever platform and language: an
     // index's builder may pick any (the first record, or Windows English first). The subfamily
     // (ID 2) only where a builder falls back to it: no ID 17, or an empty first or English one. A
@@ -297,8 +303,9 @@ fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
     let first_empty = typographic.clone().next().is_none_or(|s| s.chars().next().is_none());
     let english_empty = typographic.english_or_first().is_some_and(|s| s.chars().next().is_none());
     let subfamily = if first_empty || english_empty { names(font, StringId::SUBFAMILY_NAME.to_u16()) } else { vec![] };
-    // The first `MAX_NAMES` named instances: the most names an entry keeps, and so the most a
-    // generator lists.
+    // A file's names come only from its own style name and the first `MAX_NAMES` named instances:
+    // the format's rule, which a generator must follow (it stops at that many instances, whatever
+    // names they repeat), so a name of a later instance is refused.
     let instances = font.named_instances().iter().take(MAX_NAMES).flat_map(|i| names(font, i.subfamily_name_id().to_u16()));
     let mut have = names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME.to_u16()).into_iter().chain(subfamily).chain(instances);
     // Every listed name, not one of them: a name the face doesn't give would find it by a style it

@@ -532,3 +532,15 @@ fn facts_box(ui: &mut Ui, s: &Skin, facts: &[(String, String)]) {
         }
     });
 }
+
+#[cfg(test)]
+mod licence_tests {
+    use super::licence_name;
+
+    #[test]
+    fn every_licence_an_index_can_list_has_a_label() {
+        for id in craft_font_store::LICENSES {
+            assert_ne!(licence_name(id), id, "{id} has no label");
+        }
+    }
+}

@@ -1021,9 +1021,10 @@ fn a_named_instances_name_is_one_its_entry_may_list() {
         let bytes = font_as(&Spec { axes, instances: &refs, ..Spec::default() });
         let (family, mut file) = entry_for(&index, "Regular", &bytes);
         file.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }];
-        // The entry lists up to the format's 256 of the instances, the last of them included.
-        let listed = count.min(256);
-        file.names = texts[..listed].to_vec();
+        // The entry lists up to the format's 256 names: "Regular" and up to 255 of the first 256
+        // instances' (the 256th of them included once there are that many).
+        let from = if count >= 256 { 1 } else { 0 };
+        file.names = texts[from..count.min(256)].to_vec();
         file.names.push("Regular".into());
         for postscript in [true, false] {
             if !postscript {
@@ -1043,6 +1044,27 @@ fn a_named_instances_name_is_one_its_entry_may_list() {
     file.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }];
     file.names = vec!["Instance 256".into()];
     assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: "Instance 256".into() }));
+    // A file's names come only from its own style name and the first 256 named instances, and this
+    // documents that rule: generators must stop at 256 instances. Here 258 instances repeat
+    // "Instance 0", so a generator that read every instance and dropped the repeat would list 256
+    // distinct names, the last of them the 257th instance's, which the file doesn't give.
+    let mut texts: Vec<String> = (0..258).map(|i| format!("Instance {i}")).collect();
+    texts[1] = "Instance 0".into();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let bytes = font_as(&Spec { axes, instances: &refs, ..Spec::default() });
+    let (family, mut file) = entry_for(&index, "Regular", &bytes);
+    file.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }];
+    file.names = std::iter::once("Instance 0".to_string()).chain((2..=256).map(|i| format!("Instance {i}"))).collect();
+    assert_eq!(file.names.len(), 256);
+    assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: "Instance 256".into() }));
+    // The first 256 instances' names, every one of them, are fine.
+    file.names.pop();
+    assert_eq!(verify_face(&family, &file, &bytes), Ok(()));
+    // An entry listing more names than the format keeps is refused, whatever the font gives; the
+    // reader never produces one.
+    file.names = (0..=256).map(|i| format!("Instance {}", if i % 2 == 0 { 0 } else { 2 })).collect();
+    assert_eq!(file.names.len(), 257);
+    assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: file.names[256].clone() }));
 }
 
 // Invariant: a file is variable exactly when its entry lists axes, with at least each axis's
