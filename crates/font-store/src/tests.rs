@@ -371,7 +371,7 @@ fn a_static_file_is_found_by_its_own_name_before_a_weight() {
 }
 
 #[test]
-fn style_names_and_instances_are_bounded_and_read() {
+fn style_names_are_bounded() {
     let names = |n: usize| (0..n).map(|i| format!("Style {i}")).collect::<Vec<_>>();
     let with = |edit: &dyn Fn(&mut serde_json::Value)| {
         let mut v = host_index();
@@ -383,17 +383,9 @@ fn style_names_and_instances_are_bounded_and_read() {
     let kept = |index: &Result<Index, IndexError>| index.as_ref().is_ok_and(|i| i.family("Test Var").is_some());
     assert!(kept(&with(&|f| f["names"] = json!(names(256)))));
     assert!(!kept(&with(&|f| f["names"] = json!(names(257)))), "more than 256 style names");
-    let index =
-        with(&|f| f["instances"] = json!([{"name": "Bold", "coordinates": {"wght": 700.0}}, {"name": "Casual", "coordinates": {"CASL": 1.0}}]))
-            .unwrap();
-    let instances = &index.family("Test Var").unwrap().files[0].instances;
-    assert_eq!(instances.iter().map(|i| (i.name.as_str(), i.weight())).collect::<Vec<_>>(), [("Bold", Some(700.0)), ("Casual", None)]);
-    let many: Vec<_> = (0..257).map(|i| json!({"name": format!("I{i}"), "coordinates": {"wght": 400.0}})).collect();
-    assert!(!kept(&with(&|f| f["instances"] = json!(many))), "more than 256 instances");
-    assert!(!kept(&with(&|f| f["instances"] = json!([{"name": "Bold", "coordinates": {"weight": 700.0}}]))), "an axis tag of four letters");
-    assert!(!kept(&with(&|f| f["instances"] = json!([{"name": "a\u{7}b", "coordinates": {}}]))), "a control character");
-    // An entry without instances has none.
-    assert!(index_of(&fixture().index).unwrap().family("Test Var").unwrap().files[0].instances.is_empty());
+    // An entry's instances are not read.
+    let index = with(&|f| f["instances"] = json!([{"name": "Bold", "coordinates": {"weight": "bad"}}]));
+    assert!(kept(&index), "instances are ignored");
 }
 
 #[test]

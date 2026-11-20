@@ -123,33 +123,12 @@ pub struct FontFile {
     /// `names` compared as [`Family::face`] compares them: letters and digits only, lowercased.
     #[serde(skip)]
     pub(crate) squashed_names: Vec<String>,
-    /// A variable font's `fvar` named instances, in font order (format 1.2): each one's subfamily
-    /// name and its user coordinates. Empty for a static font, or when the entry lists none.
-    #[serde(default)]
-    pub instances: Vec<Instance>,
     /// The repository holding the file, when not the family's.
     #[serde(default)]
     pub repo: Option<String>,
     /// The commit or tag of `repo`, when not the family's.
     #[serde(default, rename = "ref")]
     pub git_ref: Option<String>,
-}
-
-/// One named instance of a variable font file.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct Instance {
-    /// The instance's subfamily name (`Bold`, `Condensed Light`).
-    pub name: String,
-    /// A user coordinate for each axis, by tag (`wght`: 700.0).
-    #[serde(default)]
-    pub coordinates: std::collections::BTreeMap<String, f32>,
-}
-
-impl Instance {
-    /// The instance's weight: its `wght` coordinate; `None` when it has none.
-    pub fn weight(&self) -> Option<f32> {
-        self.coordinates.get("wght").copied()
-    }
 }
 
 fn normal() -> String {
