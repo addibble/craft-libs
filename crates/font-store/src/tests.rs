@@ -915,7 +915,10 @@ fn a_host_index_leaves_out_collections_with_a_warning() {
         assert_eq!(index.family("Test Sans").unwrap().files.len(), kept - 1, "{path}");
         assert!(index.family("Test Var").is_some());
         let warnings = &index.sources()[0].warnings;
-        assert!(warnings.len() == 1 && warnings[0].contains("Test Sans") && warnings[0].contains("collection"), "{warnings:?}");
+        assert!(
+            warnings.len() == 1 && warnings[0].starts_with("Test Sans has files left out:") && warnings[0].contains("collection"),
+            "{warnings:?}"
+        );
         assert_eq!(user(&bytes).family("Test Sans").unwrap().files.len(), kept, "{path}");
     }
     // A family with only collections is left out whole.
@@ -924,7 +927,7 @@ fn a_host_index_leaves_out_collections_with_a_warning() {
     let bytes = v.to_string().into_bytes();
     let index = Index::from_host_bytes(&bytes, "page").unwrap();
     assert!(index.family("Test Var").is_none() && index.family("Test Sans").is_some());
-    assert!(index.sources()[0].warnings.iter().any(|w| w.contains("Test Var") && w.contains("collection")));
+    assert!(index.sources()[0].warnings.iter().any(|w| w.starts_with("Test Var is left out:") && w.contains("collection")));
     assert!(user(&bytes).family("Test Var").is_some());
     // The warning names the first three collections and counts the rest.
     let many = |n: usize| {
@@ -946,6 +949,7 @@ fn a_host_index_leaves_out_collections_with_a_warning() {
     };
     let index = Index::from_host_bytes(&many(4), "page").unwrap();
     let warning = index.sources()[0].warnings.iter().find(|w| w.contains("Test Many")).unwrap();
+    assert!(warning.starts_with("Test Many is left out:"), "{warning}");
     assert_eq!(warning.matches(".ttc").count(), 3, "{warning}");
     assert!(warning.contains("Many-0.ttc") && warning.contains("Many-2.ttc") && warning.ends_with(" and 1 more)"), "{warning}");
     // Every file counts toward the limit, collections too: the user's rule, exactly.
