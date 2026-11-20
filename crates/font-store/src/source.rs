@@ -372,29 +372,36 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
             warnings.push(format!("{} is left out: its licence `{}` needs a license_file", short(&fam.family), short(&fam.license)));
             continue;
         }
-        // `verify_face` refuses every collection, so one listed in a host's index can only fail
-        // later: it is left out, by its extension (a collection named `.ttf` is refused when fetched).
-        if ctx.host {
-            let before = fam.files.len();
-            fam.files.retain(|f| ![".ttc", ".otc"].iter().any(|ext| f.path.to_ascii_lowercase().ends_with(ext)));
-            if fam.files.len() < before {
-                let left = if fam.files.is_empty() { "is left out: it lists only font collections" } else { "has its font collections left out" };
-                warnings.push(format!("{} {left}, which a host's index can't list", short(&fam.family)));
-                if fam.files.is_empty() {
-                    continue;
-                }
-            }
-        }
         check_family(&mut fam, &ctx)?;
-        total = total.saturating_add(fam.files.len());
-        if total > MAX_FILES {
-            return invalid("too many files");
-        }
         if !names.insert(fam.family.to_lowercase()) {
             return invalid(format!("family `{}` is listed twice", fam.family));
         }
         if !dirs.insert(fam.dir.clone()) {
             return invalid(format!("folder `{}` holds more than one family", fam.dir));
+        }
+        // `verify_face` refuses every collection, so one listed in a host's index can only fail
+        // later: it is left out, by its extension, once the rules above have held the whole
+        // family (a collection named `.ttf` is refused when it is fetched).
+        if ctx.host {
+            let is_collection = |path: &str| {
+                let tail = path.len().checked_sub(4).and_then(|i| path.as_bytes().get(i..));
+                tail.is_some_and(|t| t.eq_ignore_ascii_case(b".ttc") || t.eq_ignore_ascii_case(b".otc"))
+            };
+            let left_out: Vec<String> = fam.files.iter().filter(|f| is_collection(&f.path)).map(|f| short(&f.path)).collect();
+            if !left_out.is_empty() {
+                fam.files.retain(|f| !is_collection(&f.path));
+                let what = if fam.files.is_empty() { "is left out" } else { "has files left out" };
+                let shown = left_out.iter().take(3).map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ");
+                let more = if left_out.len() > 3 { format!(" and {} more", left_out.len() - 3) } else { String::new() };
+                warnings.push(format!("{} {what}: a host's index can't list font collections ({shown}{more})", short(&fam.family)));
+                if fam.files.is_empty() {
+                    continue;
+                }
+            }
+        }
+        total = total.saturating_add(fam.files.len());
+        if total > MAX_FILES {
+            return invalid("too many files");
         }
         families.push(fam);
     }

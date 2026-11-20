@@ -769,13 +769,20 @@ fn a_host_index_is_never_curated_and_cant_shadow_another_source() {
     std::io::Write::write_all(&mut gz, v.to_string().as_bytes()).unwrap();
     let zipped = Index::from_host_bytes(&gz.finish().unwrap(), "page.1").unwrap();
     assert_eq!(zipped.sources()[0].id, "host:page.1");
-    // A host's index that declares a built-in source's ID, or one that looks like a user's, is still its own source.
+    // A host's index that declares a built-in source's ID is still its own source.
+    // An ID that spells a user's (`user:<host>/<id>`) is not a valid declared ID, for a host's index
+    // or a user's.
     let mut user_like = v.clone();
+    user_like["source"] = json!("user:fonts.host.example/index");
+    user_like["source_info"]["id"] = json!("user:fonts.host.example/index");
+    let bytes = user_like.to_string().into_bytes();
+    assert!(matches!(Index::from_host_bytes(&bytes, "page.1"), Err(IndexError::Invalid(_))));
+    assert!(Index::from_user_bytes(&bytes, "https://fonts.host.example/index.json").is_err());
+    // One that merely looks like one, with no colon, is kept as written and the source is still `host:<id>`.
     user_like["source"] = json!("user-fonts.host.example/index");
     user_like["source_info"]["id"] = json!("user-fonts.host.example/index");
     let user_like = Index::from_host_bytes(user_like.to_string().as_bytes(), "page.1").unwrap();
-    assert_eq!(user_like.sources()[0].id, "host:page.1");
-    assert_eq!(user_like.sources()[0].user_url, None);
+    assert_eq!((user_like.sources()[0].id.as_str(), user_like.sources()[0].user_url.as_deref()), ("host:page.1", None));
     let mut google = v.clone();
     google["source"] = json!(GOOGLE_FONTS);
     google["source_info"]["id"] = json!(GOOGLE_FONTS);
@@ -850,6 +857,17 @@ fn a_host_index_is_refused_whole_by_the_rules_of_a_users() {
         with(&|v| v["families"][1]["files"][0]["path"] = json!("a\\b/Evil.ttf")),
         with(&|v| v["families"][1]["files"][0]["size"] = json!(0)),
         with(&|v| v["version"] = json!("2.0")),
+        // A collection is held to the rules first, then left out.
+        with(&|v| v["families"][1]["files"][0]["path"] = json!("../outside/Evil.ttc")),
+        with(&|v| {
+            v["families"][1]["files"][0]["path"] = json!("ofl/testvar/Var.otc");
+            v["families"][1]["files"][0]["sha256"] = json!("0".repeat(63));
+        }),
+        with(&|v| {
+            let mut copy = v["families"][0].clone();
+            copy["files"] = json!([{"path": "ofl/other/x.ttc", "size": 5, "sha256": "0".repeat(64), "weight": 400, "style": "normal", "width": 100.0, "postscript": []}]);
+            v["families"].as_array_mut().unwrap().push(copy);
+        }),
         b"not json".to_vec(),
     ];
     for bytes in &refused {
