@@ -409,6 +409,18 @@ fn a_static_file_s_own_name_yields_to_a_file_listed_by_its_weight() {
     let var = file_entry("ofl/w/Foo[wght].ttf", b"variable", "normal", 400, json!([{"tag": "wght", "min": 100.0, "max": 900.0}]), &[]);
     let index = host_index_with("Test Wide", vec![wide, var]);
     assert_eq!(found(&index, "Test Wide", "Bold"), "Foo[wght].ttf");
+    // But only to a file listed by that very word: Heavy spells 900, which Black is listed as.
+    let mut heavy = named_entry("ofl/h/FooWide-Heavy.ttf", 800, &["Heavy"]);
+    heavy["width"] = json!(112.5);
+    let index = host_index_with("Test Wide Heavy", vec![heavy, named_entry("ofl/h/Foo-Black.ttf", 900, &["Black"])]);
+    assert_eq!(found(&index, "Test Wide Heavy", "Heavy"), "FooWide-Heavy.ttf");
+    assert_eq!(found(&index, "Test Wide Heavy", "Black"), "Foo-Black.ttf");
+    // Nor to a file at that weight listed by another name of its own.
+    let mut regular = named_entry("ofl/r4/FooWide-Regular.ttf", 400, &["Regular"]);
+    regular["width"] = json!(112.5);
+    let index = host_index_with("Test Wide Regular", vec![regular, named_entry("ofl/r4/Foo-Book.ttf", 400, &["Book"])]);
+    assert_eq!(found(&index, "Test Wide Regular", "Regular"), "FooWide-Regular.ttf");
+    assert_eq!(found(&index, "Test Wide Regular", "Book"), "Foo-Book.ttf");
     // Alone, it is found by its name.
     let mut wide = named_entry("ofl/wa/FooWide-Bold.ttf", 700, &["Bold"]);
     wide["width"] = json!(112.5);

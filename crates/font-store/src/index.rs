@@ -289,11 +289,11 @@ impl Family {
     /// spaces and punctuation. A static file whose own names include the style comes first, so a
     /// file whose name table calls its weight by a weight's word (`Book` at 300) is found by it
     /// though another file has that weight; of several, the one at the weight and slant the word
-    /// spells, then one of normal width. Such a file of another width yields to a file of normal
-    /// width at that weight (`Bold` of a wide face beside a variable font reaching 700); one not
-    /// at that weight yields only when a file is listed by its weight under that very word, its
+    /// spells, then one of normal width. One of another width or not at that weight yields only
+    /// when a file of normal width is listed by its weight under that very word, its
     /// weight's name or number (`Regular` at 500 beside a plain Regular or a variable font reaching
-    /// 400, but not `Book` at 300, since no weight is listed as Book). Then a variable font has every weight its
+    /// 400, a wide `Bold` beside a variable font reaching 700, but not `Book` at 300, since no
+    /// weight is listed as Book, nor a wide `Heavy` at 800 beside a `Black` at 900). Then a variable font has every weight its
     /// `wght` axis reaches, and a static file of normal width is preferred for a weight. No nearer
     /// style is offered: a style the family doesn't have is [`Unavailable::NoStyle`].
     pub fn face(&self, style: &str) -> Result<&FontFile, Unavailable> {
@@ -310,7 +310,6 @@ impl Family {
                 .filter(|f| !f.is_variable() && f.names_style(&wanted))
                 .fold(None::<&FontFile>, |best, f| if best.is_some_and(|b| rank(b) >= rank(f)) { best } else { Some(f) });
             if let Some(f) = best {
-                let at_normal_width = |(w, i): (u16, bool)| self.files.iter().any(|g| g.has_normal_width() && g.has_weight(w, i));
                 // A file a weight's listing names by this very word: a variable font reaching the
                 // weight, or a static file at it with no names of its own.
                 let listed_by_weight = |(w, i): (u16, bool)| {
@@ -320,8 +319,9 @@ impl Family {
                                 && if g.is_variable() { g.has_weight(w, i) } else { g.names.is_empty() && g.weight == w && g.is_italic() == i }
                         })
                 };
-                let wider = !f.has_normal_width() && parsed.is_some_and(at_normal_width);
-                let yields = wider || (!spelled(f) && parsed.is_some_and(listed_by_weight));
+                // Not at the spelled weight, or of another width: it yields only to a file listed by
+                // that very word.
+                let yields = (!spelled(f) || !f.has_normal_width()) && parsed.is_some_and(listed_by_weight);
                 if !yields {
                     return Ok(f);
                 }
