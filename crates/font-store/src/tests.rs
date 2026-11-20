@@ -25,6 +25,8 @@ struct Spec<'a> {
     typographic_style: Option<&'a str>,
     /// `fvar` axes: tag, min, default, max.
     axes: &'a [(&'a [u8; 4], f32, f32, f32)],
+    /// More name records, after the others of their ID: ID, Windows language ID, text.
+    more_names: &'a [(u16, u16, &'a str)],
 }
 
 impl Default for Spec<'_> {
@@ -39,6 +41,7 @@ impl Default for Spec<'_> {
             typographic: None,
             typographic_style: None,
             axes: &[],
+            more_names: &[],
         }
     }
 }
@@ -59,6 +62,7 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
         texts.push((17, t.to_string()));
     }
     let mut records: Vec<NameRecord> = texts.into_iter().map(|(id, text)| NameRecord::new(3, 1, 0x409, NameId::new(id), text.into())).collect();
+    records.extend(spec.more_names.iter().map(|&(id, lang, text)| NameRecord::new(3, 1, lang, NameId::new(id), text.to_string().into())));
     records.sort_by_key(|r| r.name_id);
     let mut builder = FontBuilder::new();
     builder.add_table(&Name::new(records)).unwrap();
@@ -889,6 +893,13 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     // Another style name fails even with the entry's sha256, as a lookalike would.
     let (family, file) = entry(&plain, &["Lumberboy"]);
     assert!(matches!(verify_face(&family, &file, &plain), Err(VerifyError::Names { .. })));
+    // The face's style is read as the index's generator reads it: ID 17 only when its first record
+    // isn't empty, else ID 2, though a later ID 17 record has a name.
+    let blank_first = font_as(&Spec { more_names: &[(17, 0x409, ""), (17, 0x40C, "Lumberboy")], ..bold });
+    let (family, file) = entry(&blank_first, &["Bold"]);
+    assert_eq!(verify_face(&family, &file, &blank_first), Ok(()));
+    let (family, file) = entry(&blank_first, &["Lumberboy"]);
+    assert!(matches!(verify_face(&family, &file, &blank_first), Err(VerifyError::Names { .. })));
     // An entry that gives no names is not held to any.
     let (family, file) = entry(&plain, &[]);
     assert_eq!(verify_face(&family, &file, &plain), Ok(()));
