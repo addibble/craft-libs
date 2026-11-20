@@ -120,12 +120,36 @@ pub struct FontFile {
     /// each named instance's. Empty when the entry lists none.
     #[serde(default)]
     pub names: Vec<String>,
+    /// `names` compared as [`Family::face`] compares them: letters and digits only, lowercased.
+    #[serde(skip)]
+    pub(crate) squashed_names: Vec<String>,
+    /// A variable font's `fvar` named instances, in font order (format 1.2): each one's subfamily
+    /// name and its user coordinates. Empty for a static font, or when the entry lists none.
+    #[serde(default)]
+    pub instances: Vec<Instance>,
     /// The repository holding the file, when not the family's.
     #[serde(default)]
     pub repo: Option<String>,
     /// The commit or tag of `repo`, when not the family's.
     #[serde(default, rename = "ref")]
     pub git_ref: Option<String>,
+}
+
+/// One named instance of a variable font file.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Instance {
+    /// The instance's subfamily name (`Bold`, `Condensed Light`).
+    pub name: String,
+    /// A user coordinate for each axis, by tag (`wght`: 700.0).
+    #[serde(default)]
+    pub coordinates: std::collections::BTreeMap<String, f32>,
+}
+
+impl Instance {
+    /// The instance's weight: its `wght` coordinate; `None` when it has none.
+    pub fn weight(&self) -> Option<f32> {
+        self.coordinates.get("wght").copied()
+    }
 }
 
 fn normal() -> String {
@@ -137,6 +161,17 @@ fn normal_width() -> f32 {
 }
 
 impl FontFile {
+    /// Whether one of the file's own style `names` is `squashed` (a style compared as
+    /// [`Family::face`] compares names). The names are squashed when the index is read; an entry
+    /// built or changed since is squashed here.
+    fn names_style(&self, squashed: &str) -> bool {
+        if self.squashed_names.len() == self.names.len() {
+            self.squashed_names.iter().any(|n| n == squashed)
+        } else {
+            self.names.iter().any(|n| squash(n) == squashed)
+        }
+    }
+
     /// The file's name, the last part of its path.
     pub fn file_name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or(&self.path)
@@ -264,23 +299,35 @@ impl Family {
     /// CSS weight (`700`), one of a file's own style `names` (`Weight 450`, `Lumberboy`: what the
     /// font's name table calls the style, which a document stores), or the part of a PostScript
     /// name after its `-` (`BoldItalic`, `CondensedBold`). A name is compared ignoring case,
-    /// spaces and punctuation. A variable font has every weight its `wght` axis reaches. A static
-    /// file of normal width is preferred for a weight. No nearer style is offered: a style the family doesn't have
-    /// is [`Unavailable::NoStyle`].
+    /// spaces and punctuation. A static file whose own names include the style comes first, so a
+    /// file whose name table calls its weight by a weight's word (`Book` at 300) is found by it
+    /// though another file has that weight; of several, the one at the weight and slant the word
+    /// spells. Then a variable font has every weight its `wght` axis reaches, and a static file of
+    /// normal width is preferred for a weight. No nearer style is offered: a style the family
+    /// doesn't have is [`Unavailable::NoStyle`].
     pub fn face(&self, style: &str) -> Result<&FontFile, Unavailable> {
         let no_style = || Unavailable::NoStyle { family: self.family.clone(), style: style.to_string() };
-        if let Some((weight, italic)) = parse_style(style) {
+        let wanted = squash(style);
+        let parsed = parse_style(style);
+        if !wanted.is_empty() {
+            let mut named = self.files.iter().filter(|f| !f.is_variable() && f.names_style(&wanted));
+            let first = named.next();
+            let spelled = |f: &&FontFile| parsed.is_some_and(|(w, i)| f.weight == w && f.is_italic() == i);
+            if let Some(f) = first.filter(spelled).or_else(|| named.find(spelled)).or(first) {
+                return Ok(f);
+            }
+        }
+        if let Some((weight, italic)) = parsed {
             let found: Vec<&FontFile> = self.files.iter().filter(|f| f.has_weight(weight, italic) && f.has_normal_width()).collect();
             let exact = found.iter().find(|f| !f.is_variable() && f.weight == weight && f.is_italic() == italic && f.width == 100.0);
             if let Some(f) = exact.or(found.first()) {
                 return Ok(f);
             }
         }
-        let wanted = squash(style);
         if wanted.is_empty() {
             return Err(no_style());
         }
-        let named = self.files.iter().find(|f| f.names.iter().any(|n| squash(n) == wanted));
+        let named = self.files.iter().find(|f| f.names_style(&wanted));
         named
             .or_else(|| self.files.iter().find(|f| f.postscript.iter().any(|p| p.split_once('-').is_some_and(|(_, s)| squash(s) == wanted))))
             .ok_or_else(no_style)
@@ -303,7 +350,7 @@ impl Family {
 }
 
 /// Letters and digits only, lowercased: `Bold Italic`, `bold-italic` and `BoldItalic` are equal.
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 

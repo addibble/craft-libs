@@ -11,6 +11,8 @@ use crate::index::{
 
 pub(crate) const MAX_STR: usize = 1024;
 const MAX_LIST: usize = 4096;
+/// The most style names, or named instances, a file's entry may list (craft-font-index format).
+const MAX_NAMES: usize = 256;
 const MAX_FAMILIES: usize = 50_000;
 const MAX_FILES: usize = 200_000;
 const MAX_SEGMENT: usize = 64;
@@ -474,8 +476,8 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
             return invalid(format!("`{}` has width {}", short(&f.path), f.width));
         }
         check_str("style", &f.style)?;
-        if f.axes.len() > 64 || f.postscript.len() > MAX_LIST || f.names.len() > MAX_LIST {
-            return invalid(format!("`{}` has too many axes, PostScript names or style names", short(&f.path)));
+        if f.axes.len() > 64 || f.postscript.len() > MAX_LIST || f.names.len() > MAX_NAMES || f.instances.len() > MAX_NAMES {
+            return invalid(format!("`{}` has too many axes, PostScript names, style names or instances", short(&f.path)));
         }
         for a in &f.axes {
             if a.tag.len() != 4 || !a.tag.is_ascii() || !a.min.is_finite() || !a.max.is_finite() || a.min > a.max {
@@ -492,6 +494,12 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
             check_str("style name", name)?;
             if name.is_empty() {
                 return invalid(format!("`{}` has an empty style name", short(&f.path)));
+            }
+        }
+        for i in &f.instances {
+            check_str("instance name", &i.name)?;
+            if i.coordinates.len() > 64 || i.coordinates.iter().any(|(tag, v)| tag.len() != 4 || !tag.is_ascii() || !v.is_finite()) {
+                return invalid(format!("`{}` has a bad instance", short(&f.path)));
             }
         }
         check_repo_ref(&f.path, f.repo.as_deref(), f.git_ref.as_deref())?;
@@ -518,5 +526,8 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
         }
     }
     fam.dir = if ctx.google { google_dir(fam)? } else { format!("{}/{}", ctx.slug, slug(&fam.family)) };
+    for f in &mut fam.files {
+        f.squashed_names = f.names.iter().map(|n| crate::index::squash(n)).collect();
+    }
     Ok(())
 }

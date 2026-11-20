@@ -62,12 +62,13 @@ pub enum VerifyError {
         /// The file's, or `(none)`.
         found: String,
     },
-    /// The entry gives style names and no face of the file has one of them.
-    #[error("the file's style is {found}, not one of {}", expected.join(", "))]
+    /// The entry gives a style name that no face of the file gives: every name it lists must be
+    /// the face's own style name or one of its named instances'.
+    #[error("the entry lists the style {found}, which the file doesn't give (it lists {})", expected.join(", "))]
     Names {
         /// The entry's style names.
         expected: Vec<String>,
-        /// The file's own style name, or `(none)`.
+        /// The first of them the file doesn't give.
         found: String,
     },
 }
@@ -208,9 +209,11 @@ fn check_face(family: &Family, file: &FontFile, font: &FontRef<'_>) -> Result<()
         let typographic = names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME);
         let own = if typographic.is_empty() { names(font, StringId::SUBFAMILY_NAME) } else { typographic };
         let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).filter_map(|i| names(font, i.subfamily_name_id()).into_iter().next());
-        if !own.iter().cloned().chain(instances).any(|n| file.names.contains(&n)) {
-            let found = own.first().cloned().unwrap_or_else(|| "(none)".into());
-            return Err((3, VerifyError::Names { expected: file.names.clone(), found }));
+        let have: Vec<String> = own.iter().cloned().chain(instances).collect();
+        // Every listed name, not one of them: a name the face doesn't give would find it by a
+        // style it isn't.
+        if let Some(stray) = file.names.iter().find(|n| !have.contains(n)) {
+            return Err((3, VerifyError::Names { expected: file.names.clone(), found: stray.clone() }));
         }
     }
     Ok(())

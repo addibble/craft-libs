@@ -329,6 +329,73 @@ fn a_style_is_found_by_the_name_the_font_itself_uses() {
     }
 }
 
+/// A host index with `files` (path, weight, own style names) as the family `name`, beside the
+/// fixture's families.
+fn host_index_with(name: &str, files: &[(&str, u16, &[&str])]) -> Index {
+    let mut v = host_index();
+    let mut family = v["families"][0].clone();
+    family["family"] = json!(name);
+    family["files"] = json!(
+        files
+            .iter()
+            .map(|&(path, weight, names)| {
+                let mut e = file_entry(path, path.as_bytes(), "normal", weight, json!([]), &[]);
+                e["names"] = json!(names);
+                e
+            })
+            .collect::<Vec<_>>()
+    );
+    v["families"].as_array_mut().unwrap().push(family);
+    Index::from_host_bytes(v.to_string().as_bytes(), "page").unwrap()
+}
+
+#[test]
+fn a_static_file_is_found_by_its_own_name_before_a_weight() {
+    // Book at 300: "Book" is also a weight's word (400), which Roman has.
+    let index = host_index_with("Test Names", &[("ofl/n/Book.otf", 300, &["Book"]), ("ofl/n/Roman.otf", 400, &["Roman"])]);
+    let name = |style: &str| index.find_face("Test Names", style).map(|f| f.file.file_name().to_string());
+    assert_eq!(name("Book").unwrap(), "Book.otf");
+    assert_eq!(name("book").unwrap(), "Book.otf");
+    assert_eq!(name("Roman").unwrap(), "Roman.otf");
+    assert_eq!(name("400").unwrap(), "Roman.otf", "a weight is still found by its number");
+    assert_eq!(name("300").unwrap(), "Book.otf");
+    // Two files call themselves Regular: the one at the weight the word spells, wherever it is listed.
+    let index = host_index_with("Test Regulars", &[("ofl/r/Medium.otf", 500, &["Regular"]), ("ofl/r/Regular.otf", 400, &["Regular"])]);
+    let name = |style: &str| index.find_face("Test Regulars", style).map(|f| f.file.file_name().to_string());
+    assert_eq!(name("Regular").unwrap(), "Regular.otf");
+    assert_eq!(name("500").unwrap(), "Medium.otf");
+    assert_eq!(name("Medium").unwrap(), "Medium.otf");
+    // Alone, the file at 500 that calls itself Regular is found by it.
+    let index = host_index_with("Test Sharp", &[("ofl/s/Sharp.ttf", 500, &["Regular"])]);
+    assert_eq!(index.find_face("Test Sharp", "Regular").unwrap().file.file_name(), "Sharp.ttf");
+}
+
+#[test]
+fn style_names_and_instances_are_bounded_and_read() {
+    let names = |n: usize| (0..n).map(|i| format!("Style {i}")).collect::<Vec<_>>();
+    let with = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = host_index();
+        let f = v["families"].as_array_mut().unwrap().iter_mut().find(|f| f["family"] == "Test Var").unwrap();
+        edit(&mut f["files"][0]);
+        Index::from_host_bytes(v.to_string().as_bytes(), "page")
+    };
+    // A bad entry refuses the index, or leaves its family out.
+    let kept = |index: &Result<Index, IndexError>| index.as_ref().is_ok_and(|i| i.family("Test Var").is_some());
+    assert!(kept(&with(&|f| f["names"] = json!(names(256)))));
+    assert!(!kept(&with(&|f| f["names"] = json!(names(257)))), "more than 256 style names");
+    let index =
+        with(&|f| f["instances"] = json!([{"name": "Bold", "coordinates": {"wght": 700.0}}, {"name": "Casual", "coordinates": {"CASL": 1.0}}]))
+            .unwrap();
+    let instances = &index.family("Test Var").unwrap().files[0].instances;
+    assert_eq!(instances.iter().map(|i| (i.name.as_str(), i.weight())).collect::<Vec<_>>(), [("Bold", Some(700.0)), ("Casual", None)]);
+    let many: Vec<_> = (0..257).map(|i| json!({"name": format!("I{i}"), "coordinates": {"wght": 400.0}})).collect();
+    assert!(!kept(&with(&|f| f["instances"] = json!(many))), "more than 256 instances");
+    assert!(!kept(&with(&|f| f["instances"] = json!([{"name": "Bold", "coordinates": {"weight": 700.0}}]))), "an axis tag of four letters");
+    assert!(!kept(&with(&|f| f["instances"] = json!([{"name": "a\u{7}b", "coordinates": {}}]))), "a control character");
+    // An entry without instances has none.
+    assert!(index_of(&fixture().index).unwrap().family("Test Var").unwrap().files[0].instances.is_empty());
+}
+
 #[test]
 fn postscript_lookups_match_exactly() {
     let index = index_of(&fixture().index).unwrap();
@@ -781,14 +848,31 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     let plain = font_as(&bold);
     let (family, file) = entry(&plain, &["Bold"]);
     assert_eq!(verify_face(&family, &file, &plain), Ok(()));
+    // Every listed name must be the face's: one of them isn't enough.
     let (family, file) = entry(&plain, &["Weight 700", "Bold"]);
-    assert_eq!(verify_face(&family, &file, &plain), Ok(()), "one of them is enough");
+    assert_eq!(
+        verify_face(&family, &file, &plain),
+        Err(VerifyError::Names { expected: vec!["Weight 700".into(), "Bold".into()], found: "Weight 700".into() })
+    );
+    let regular = font_as(&Spec::default());
+    let regular_entry = |names: &[&str]| {
+        let (family, mut file) = entry_for(&index, "Regular", &regular);
+        file.names = names.iter().map(|n| n.to_string()).collect();
+        (family, file)
+    };
+    let (family, file) = regular_entry(&["Regular", "Lumberboy"]);
+    assert_eq!(
+        verify_face(&family, &file, &regular),
+        Err(VerifyError::Names { expected: vec!["Regular".into(), "Lumberboy".into()], found: "Lumberboy".into() })
+    );
+    let (family, file) = regular_entry(&["Regular"]);
+    assert_eq!(verify_face(&family, &file, &regular), Ok(()));
     // The typographic subfamily (ID 17) wins over ID 2.
     let split = font_as(&Spec { style: "Bold", typographic_style: Some("Lumberboy"), ..bold });
     let (family, file) = entry(&split, &["Lumberboy"]);
     assert_eq!(verify_face(&family, &file, &split), Ok(()));
     let (family, file) = entry(&split, &["Bold"]);
-    assert_eq!(verify_face(&family, &file, &split), Err(VerifyError::Names { expected: vec!["Bold".into()], found: "Lumberboy".into() }));
+    assert_eq!(verify_face(&family, &file, &split), Err(VerifyError::Names { expected: vec!["Bold".into()], found: "Bold".into() }));
     // Another style name fails even with the entry's sha256, as a lookalike would.
     let (family, file) = entry(&plain, &["Lumberboy"]);
     assert!(matches!(verify_face(&family, &file, &plain), Err(VerifyError::Names { .. })));
