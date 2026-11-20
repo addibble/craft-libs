@@ -889,6 +889,21 @@ fn entry_for(index: &Index, style: &str, bytes: &[u8]) -> (Family, FontFile) {
     (face.family.clone(), file)
 }
 
+// Invariant: a collection is refused by `verify_face` even when its size and sha256 are the
+// entry's (breaks if: the `ttcf` check is dropped, so a collection's first face could pass).
+#[test]
+fn a_collection_is_refused_by_verify_face() {
+    let index = host_index_read();
+    let mut bytes = b"ttcf".to_vec();
+    bytes.extend_from_slice(&[0, 2, 0, 0, 0, 0, 0, 0]);
+    let (family, file) = entry_for(&index, "Bold", &bytes);
+    assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Collection));
+    // The size and sha256 are checked first.
+    let (_, mut other) = entry_for(&index, "Bold", &bytes);
+    other.size += 1;
+    assert!(matches!(verify_face(&family, &other, &bytes), Err(VerifyError::Size { .. })));
+}
+
 // Invariant: a file with the index's sha256 is still refused when it is not the family or the
 // PostScript name its entry says (breaks if: the family check or the
 // PostScript check is dropped or loosened to accept a lookalike). Either
