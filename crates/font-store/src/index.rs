@@ -115,6 +115,11 @@ pub struct FontFile {
     /// PostScript names: the face's and, for a variable font, each named instance's.
     #[serde(default)]
     pub postscript: Vec<String>,
+    /// The face's style names as the font's own name table gives them (format 1.3): the
+    /// typographic subfamily (name ID 17), else the subfamily (ID 2) and, for a variable font,
+    /// each named instance's. Empty when the entry lists none.
+    #[serde(default)]
+    pub names: Vec<String>,
     /// The repository holding the file, when not the family's.
     #[serde(default)]
     pub repo: Option<String>,
@@ -256,9 +261,11 @@ impl Family {
     }
 
     /// The file with exactly this style: a style name (`Bold Italic`, `SemiBold`, `Regular`), a
-    /// CSS weight (`700`), or the part of a PostScript name after its `-` (`BoldItalic`,
-    /// `CondensedBold`). A variable font has every weight its `wght` axis reaches. A static file
-    /// of normal width is preferred. No nearer style is offered: a style the family doesn't have
+    /// CSS weight (`700`), one of a file's own style `names` (`Weight 450`, `Lumberboy`: what the
+    /// font's name table calls the style, which a document stores), or the part of a PostScript
+    /// name after its `-` (`BoldItalic`, `CondensedBold`). A name is compared ignoring case,
+    /// spaces and punctuation. A variable font has every weight its `wght` axis reaches. A static
+    /// file of normal width is preferred for a weight. No nearer style is offered: a style the family doesn't have
     /// is [`Unavailable::NoStyle`].
     pub fn face(&self, style: &str) -> Result<&FontFile, Unavailable> {
         let no_style = || Unavailable::NoStyle { family: self.family.clone(), style: style.to_string() };
@@ -273,7 +280,10 @@ impl Family {
         if wanted.is_empty() {
             return Err(no_style());
         }
-        self.files.iter().find(|f| f.postscript.iter().any(|p| p.split_once('-').is_some_and(|(_, s)| squash(s) == wanted))).ok_or_else(no_style)
+        let named = self.files.iter().find(|f| f.names.iter().any(|n| squash(n) == wanted));
+        named
+            .or_else(|| self.files.iter().find(|f| f.postscript.iter().any(|p| p.split_once('-').is_some_and(|(_, s)| squash(s) == wanted))))
+            .ok_or_else(no_style)
     }
 
     /// The file with this PostScript name, matched exactly.

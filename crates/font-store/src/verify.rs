@@ -62,6 +62,14 @@ pub enum VerifyError {
         /// The file's, or `(none)`.
         found: String,
     },
+    /// The entry gives style names and no face of the file has one of them.
+    #[error("the file's style is {found}, not one of {}", expected.join(", "))]
+    Names {
+        /// The entry's style names.
+        expected: Vec<String>,
+        /// The file's own style name, or `(none)`.
+        found: String,
+    },
 }
 
 /// The sha256 of `bytes`, in lowercase hex.
@@ -112,6 +120,9 @@ pub fn is_font(bytes: &[u8]) -> bool {
 ///    held to the flag), and a file is variable exactly when the entry lists axes, each with at
 ///    least the range the entry gives;
 /// 3. the entry's PostScript name (ID 6), when the entry lists any: one of them, exactly.
+///
+/// 4. the entry's style names, when the entry lists any: the face's own style name (ID 17, else
+///    ID 2) or a named instance's subfamily name is one of them, exactly.
 ///
 /// The error is the first check the best-matching face failed. A file of another family, style
 /// or PostScript name fails even when its bytes have the index's sha256, as they do if the index
@@ -190,6 +201,16 @@ fn check_face(family: &Family, file: &FontFile, font: &FontRef<'_>) -> Result<()
         if !have.iter().any(|n| file.postscript.contains(n)) {
             let found = have.first().cloned().unwrap_or_else(|| "(none)".into());
             return Err((2, VerifyError::PostScript { expected: file.postscript.clone(), found }));
+        }
+    }
+
+    if !file.names.is_empty() {
+        let typographic = names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME);
+        let own = if typographic.is_empty() { names(font, StringId::SUBFAMILY_NAME) } else { typographic };
+        let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).filter_map(|i| names(font, i.subfamily_name_id()).into_iter().next());
+        if !own.iter().cloned().chain(instances).any(|n| file.names.contains(&n)) {
+            let found = own.first().cloned().unwrap_or_else(|| "(none)".into());
+            return Err((3, VerifyError::Names { expected: file.names.clone(), found }));
         }
     }
     Ok(())

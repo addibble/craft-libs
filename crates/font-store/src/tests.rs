@@ -21,13 +21,25 @@ struct Spec<'a> {
     postscript: &'a str,
     /// The typographic family (ID 16), with `family` as the legacy one (ID 1).
     typographic: Option<&'a str>,
+    /// The typographic subfamily (ID 17), with `style` as the legacy one (ID 2).
+    typographic_style: Option<&'a str>,
     /// `fvar` axes: tag, min, default, max.
     axes: &'a [(&'a [u8; 4], f32, f32, f32)],
 }
 
 impl Default for Spec<'_> {
     fn default() -> Self {
-        Spec { family: "Test Sans", style: "Regular", weight: 400, width_class: 5, italic: false, postscript: "", typographic: None, axes: &[] }
+        Spec {
+            family: "Test Sans",
+            style: "Regular",
+            weight: 400,
+            width_class: 5,
+            italic: false,
+            postscript: "",
+            typographic: None,
+            typographic_style: None,
+            axes: &[],
+        }
     }
 }
 
@@ -42,6 +54,9 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
     let mut texts = vec![(1, family.to_string()), (2, style.to_string()), (4, format!("{family} {style}")), (6, ps)];
     if let Some(t) = spec.typographic {
         texts.push((16, t.to_string()));
+    }
+    if let Some(t) = spec.typographic_style {
+        texts.push((17, t.to_string()));
     }
     let mut records: Vec<NameRecord> = texts.into_iter().map(|(id, text)| NameRecord::new(3, 1, 0x409, NameId::new(id), text.into())).collect();
     records.sort_by_key(|r| r.name_id);
@@ -274,6 +289,44 @@ fn lookups_match_exactly_and_refuse_near_matches() {
     assert_eq!(name("Test Var", "Light").unwrap(), "TestVar[wght].ttf");
     assert!(matches!(name("Test Var", "Thin"), Err(Unavailable::NoStyle { .. })));
     assert!(matches!(name("Test Var", "Bold Italic"), Err(Unavailable::NoStyle { .. })));
+}
+
+#[test]
+fn a_style_is_found_by_the_name_the_font_itself_uses() {
+    // The variable font's PostScript suffix is "450"; its name table says "Weight 450".
+    let with = |family: &str, file: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = fixture().index;
+        let f = v["families"].as_array_mut().unwrap().iter_mut().find(|f| f["family"] == family).unwrap();
+        edit(f["files"].as_array_mut().unwrap().iter_mut().find(|f| f["path"].as_str().unwrap().ends_with(file)).unwrap());
+        v
+    };
+    let mut v = with("Test Var", "TestVar[wght].ttf", &|f| {
+        f["postscript"] = json!(["TestVar-450"]);
+        f["names"] = json!(["Regular", "Weight 450"]);
+    });
+    let sans = with("Test Sans", "TestSans-Bold.ttf", &|f| f["names"] = json!(["Lumberboy"]));
+    let bold = sans["families"].as_array().unwrap().iter().find(|f| f["family"] == "Test Sans").unwrap().clone();
+    *v["families"].as_array_mut().unwrap().iter_mut().find(|f| f["family"] == "Test Sans").unwrap() = bold;
+    let index = index_of(&v).unwrap();
+    let name = |family: &str, style: &str| index.find_face(family, style).map(|f| f.file.file_name().to_string());
+    assert_eq!(name("Test Var", "Weight 450").unwrap(), "TestVar[wght].ttf");
+    assert_eq!(name("Test Var", "weight450").unwrap(), "TestVar[wght].ttf");
+    assert_eq!(name("Test Var", "450").unwrap(), "TestVar[wght].ttf");
+    assert_eq!(index.family("Test Sans").unwrap().face("Lumberboy").unwrap().names, ["Lumberboy"]);
+    assert_eq!(name("Test Sans", "Lumber Boy").unwrap(), "TestSans-Bold.ttf");
+    // A name the file doesn't give is no style, and a weight still goes first.
+    assert!(matches!(name("Test Sans", "Weight 450"), Err(Unavailable::NoStyle { .. })));
+    assert!(matches!(name("Test Var", "Lumberboy"), Err(Unavailable::NoStyle { .. })));
+    assert_eq!(name("Test Sans", "Bold").unwrap(), "TestSans-Bold.ttf");
+    // An entry without `names` still reads, and has none.
+    let plain = index_of(&fixture().index).unwrap();
+    assert!(plain.family("Test Sans").unwrap().files.iter().all(|f| f.names.is_empty()));
+    assert!(matches!(plain.find_face("Test Var", "Weight 450"), Err(Unavailable::NoStyle { .. })));
+    // An entry's style names are checked like its PostScript names: a family with a bad one is left out.
+    for bad in [json!([""]), json!(["a\u{7}b"])] {
+        let broken = with("Test Sans", "TestSans-Bold.ttf", &|f| f["names"] = bad.clone());
+        assert!(index_of(&broken).map_or(true, |i| i.family("Test Sans").is_none()), "{bad}");
+    }
 }
 
 #[test]
@@ -713,6 +766,35 @@ fn a_face_must_be_the_family_style_and_postscript_name_its_entry_says() {
     let junk = b"not a font".to_vec();
     let (f3, e3) = entry_for(&index, "Bold", &junk);
     assert_eq!(verify_face(&f3, &e3, &junk), Err(VerifyError::NotAFont));
+}
+
+#[test]
+fn a_face_must_have_a_style_name_its_entry_lists() {
+    let index = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
+    let bold = Spec { style: "Bold", weight: 700, ..Spec::default() };
+    let entry = |bytes: &[u8], names: &[&str]| {
+        let (family, mut file) = entry_for(&index, "Bold", bytes);
+        file.names = names.iter().map(|n| n.to_string()).collect();
+        (family, file)
+    };
+    // The subfamily (ID 2) is the face's style name when the font has no typographic one.
+    let plain = font_as(&bold);
+    let (family, file) = entry(&plain, &["Bold"]);
+    assert_eq!(verify_face(&family, &file, &plain), Ok(()));
+    let (family, file) = entry(&plain, &["Weight 700", "Bold"]);
+    assert_eq!(verify_face(&family, &file, &plain), Ok(()), "one of them is enough");
+    // The typographic subfamily (ID 17) wins over ID 2.
+    let split = font_as(&Spec { style: "Bold", typographic_style: Some("Lumberboy"), ..bold });
+    let (family, file) = entry(&split, &["Lumberboy"]);
+    assert_eq!(verify_face(&family, &file, &split), Ok(()));
+    let (family, file) = entry(&split, &["Bold"]);
+    assert_eq!(verify_face(&family, &file, &split), Err(VerifyError::Names { expected: vec!["Bold".into()], found: "Lumberboy".into() }));
+    // Another style name fails even with the entry's sha256, as a lookalike would.
+    let (family, file) = entry(&plain, &["Lumberboy"]);
+    assert!(matches!(verify_face(&family, &file, &plain), Err(VerifyError::Names { .. })));
+    // An entry that gives no names is not held to any.
+    let (family, file) = entry(&plain, &[]);
+    assert_eq!(verify_face(&family, &file, &plain), Ok(()));
 }
 
 #[test]
