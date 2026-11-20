@@ -474,7 +474,8 @@ pub struct FontSource {
     pub user_url: Option<String>,
     /// A user-added source whose file differs from the one first fetched.
     pub changed: bool,
-    /// Families left out of the index and why (a licence that doesn't allow redistribution).
+    /// Families or files left out of the index and why: a licence that doesn't allow redistribution,
+    /// or, in a host's index, a font collection.
     pub warnings: Vec<String>,
     /// How many families it has.
     pub families: usize,

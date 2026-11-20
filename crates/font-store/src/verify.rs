@@ -41,9 +41,10 @@ pub enum VerifyError {
     /// The font isn't the style the entry claims.
     #[error("the file is {found}, not {expected}")]
     Style {
-        /// What the entry claims, of the attributes that differ: `weight 700, width 100%`.
+        /// What the entry claims, of the attributes that differ: `weight 700, width 100%`; or
+        /// `a variable font` or `a static font` when the file is not the kind the entry lists.
         expected: String,
-        /// What the file is, of the same attributes.
+        /// What the file is, of the same attributes, or `a static font` or `a variable font`.
         found: String,
     },
     /// The file has no variation axis the entry claims, or not its whole range.
