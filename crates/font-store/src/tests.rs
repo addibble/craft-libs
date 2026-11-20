@@ -430,6 +430,12 @@ fn style_names_are_bounded() {
     let listed = |index: Result<Index, IndexError>| index.unwrap().family("Test Var").unwrap().files[0].names.clone();
     assert_eq!(listed(with(&|f| f["names"] = json!(names(256)))), names(256));
     assert_eq!(listed(with(&|f| f["names"] = json!(names(300)))), names(256), "the first 256 of 300");
+    // A malformed `names` never refuses the entry: null or not an array reads as none, and a
+    // non-string is dropped.
+    assert_eq!(listed(with(&|f| f["names"] = json!(null))), Vec::<String>::new());
+    assert_eq!(listed(with(&|f| f["names"] = json!("Bold"))), Vec::<String>::new());
+    assert_eq!(listed(with(&|f| f["names"] = json!({"0": "Bold"}))), Vec::<String>::new());
+    assert_eq!(listed(with(&|f| f["names"] = json!([1, "Bold", null, ["Light"], "Light"]))), ["Bold", "Light"]);
     // An entry's instances are not read.
     let index = with(&|f| f["instances"] = json!([{"name": "Bold", "coordinates": {"weight": "bad"}}]));
     assert!(kept(&index), "instances are ignored");

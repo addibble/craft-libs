@@ -117,8 +117,9 @@ pub struct FontFile {
     pub postscript: Vec<String>,
     /// The face's style names as the font's own name table gives them (format 1.3): the
     /// typographic subfamily (name ID 17), else the subfamily (ID 2) and, for a variable font,
-    /// each named instance's. Empty when the entry lists none.
-    #[serde(default)]
+    /// each named instance's. Empty when the entry lists none. Read leniently: names only help find
+    /// a face, so a malformed list (`null`, not an array) reads as none and a non-string is dropped.
+    #[serde(default, deserialize_with = "lenient_names")]
     pub names: Vec<String>,
     /// The repository holding the file, when not the family's.
     #[serde(default)]
@@ -126,6 +127,21 @@ pub struct FontFile {
     /// The commit or tag of `repo`, when not the family's.
     #[serde(default, rename = "ref")]
     pub git_ref: Option<String>,
+}
+
+/// A file's `names` as an array of strings, whatever the entry holds there: anything else is none.
+fn lenient_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    use serde::Deserialize as _;
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 fn normal() -> String {
