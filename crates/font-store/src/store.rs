@@ -162,7 +162,7 @@ pub struct InstalledFamily {
     pub source: String,
     /// The folder in the store holding its files.
     pub dir: String,
-    /// `OFL`, `APACHE2` or `UFL`.
+    /// One of [`LICENSES`](crate::LICENSES).
     pub license: String,
     /// The licence file's name in the folder.
     pub license_file: Option<String>,

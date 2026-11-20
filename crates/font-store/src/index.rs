@@ -239,7 +239,7 @@ pub struct Family {
     /// ISO 15924 codes.
     #[serde(default)]
     pub scripts: Vec<String>,
-    /// `OFL`, `APACHE2` or `UFL`.
+    /// One of [`LICENSES`](crate::index::LICENSES).
     #[serde(default)]
     pub license: String,
     /// Format 1.0: the licence file in google/fonts, beside the font files.

@@ -12,7 +12,7 @@ use crate::index::{
 pub(crate) const MAX_STR: usize = 1024;
 const MAX_LIST: usize = 4096;
 /// The most style names a file's entry keeps (craft-font-index format); the rest are dropped.
-const MAX_NAMES: usize = 256;
+pub(crate) const MAX_NAMES: usize = 256;
 const MAX_FAMILIES: usize = 50_000;
 const MAX_FILES: usize = 200_000;
 const MAX_SEGMENT: usize = 64;

@@ -8,7 +8,7 @@ use skrifa::string::StringId;
 use skrifa::{FontRef, MetadataProvider};
 
 use crate::index::{Family, FontFile, squash};
-use crate::source::MAX_STR;
+use crate::source::{MAX_NAMES, MAX_STR};
 
 /// Tables of which a drawable face has at least one.
 const OUTLINE_TABLES: [&[u8; 4]; 4] = [b"glyf", b"CFF ", b"CFF2", b"VARC"];
@@ -65,13 +65,11 @@ pub enum VerifyError {
     /// The file is a collection, which `verify_face` doesn't check and so refuses.
     #[error("the file is a font collection, which verify_face doesn't check")]
     Collection,
-    /// The entry gives a style name that no face of the file gives: every name it lists must be
-    /// the face's own style name or one of its named instances'.
-    #[error("the entry lists the style {found}, which the file doesn't give (it lists {})", expected.join(", "))]
+    /// The entry lists a style name that the file doesn't give: every name it lists must be the
+    /// font's own style name or one of its named instances'.
+    #[error("the entry lists the style {found}, which the file doesn't give")]
     Names {
-        /// The entry's style names.
-        expected: Vec<String>,
-        /// The first of them the file doesn't give.
+        /// The first style name the entry lists that the file doesn't give.
         found: String,
     },
 }
@@ -162,7 +160,8 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 /// 2. its variation axes are the entry's: a font is variable exactly when the entry lists axes,
 ///    each with at least the range the entry gives;
 /// 3. when the entry lists PostScript names, the font's (ID 6) is one of them, exactly, and
-///    nothing more is compared: the PostScript name is the style's identity. When it lists none,
+///    the weight, width and italic flag are not compared: the PostScript name is the style's
+///    identity. When it lists none,
 ///    the entry's weight, width and italic flag each equal one of the readings of the font's
 ///    raw `OS/2` and `head` fields that the index generators make (see the README). A comparison
 ///    is skipped for what the entry says a variable font covers: weight with a `wght` axis,
@@ -174,9 +173,11 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 ///    ([`VerifyError::Names`]). This is checked after 3, whether or not PostScript names are
 ///    listed.
 ///
-/// The work is bounded: one sha256 pass, one table directory, and for each of the name IDs 16, 1
-/// and 6, at most 65,535 record headers scanned, at most 64 records decoded and at most 1,025
-/// characters of each; only names of at most 1,024 characters are compared.
+/// The work is bounded: one sha256 pass, one table directory, and for each of the name IDs 16, 1,
+/// 6, 17 and 2 and for each of at most 256 named instances' subfamily name IDs, at most 65,535
+/// record headers scanned, at most 64 records decoded and at most 1,025 characters of each; only
+/// names of at most 1,024 characters are compared, and no more than the entry's own at most 256
+/// style names are held.
 pub fn verify_face(family: &Family, file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
     check_bytes(file, bytes)?;
     if bytes.starts_with(b"ttcf") {
@@ -293,18 +294,23 @@ fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
     // (ID 2) only where a builder falls back to it: no ID 17, or an empty first or English one. A
     // face whose ID 17 says W6 isn't Regular because its ID 2 says so.
     let typographic = font.localized_strings(StringId::TYPOGRAPHIC_SUBFAMILY_NAME);
-    let first_empty = typographic.clone().next().is_none_or(|s| s.to_string().is_empty());
-    let english_empty = typographic.english_or_first().is_some_and(|s| s.to_string().is_empty());
+    let first_empty = typographic.clone().next().is_none_or(|s| s.chars().next().is_none());
+    let english_empty = typographic.english_or_first().is_some_and(|s| s.chars().next().is_none());
     let subfamily = if first_empty || english_empty { names(font, StringId::SUBFAMILY_NAME.to_u16()) } else { vec![] };
-    let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).flat_map(|i| names(font, i.subfamily_name_id().to_u16()));
-    // At most `MAX_NAME_RECORDS * 8` names, so a hostile font's records (`MAX_NAME_RECORDS` per ID
-    // and per instance) can't grow the list without bound.
-    let have: Vec<String> =
-        names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME.to_u16()).into_iter().chain(subfamily).chain(instances).take(MAX_NAME_RECORDS * 8).collect();
+    // The first `MAX_NAMES` named instances: the most names an entry keeps, and so the most a
+    // generator lists.
+    let instances = font.named_instances().iter().take(MAX_NAMES).flat_map(|i| names(font, i.subfamily_name_id().to_u16()));
+    let mut have = names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME.to_u16()).into_iter().chain(subfamily).chain(instances);
     // Every listed name, not one of them: a name the face doesn't give would find it by a style it
-    // isn't.
-    if let Some(stray) = file.names.iter().find(|n| !have.contains(n)) {
-        return Err(VerifyError::Names { expected: file.names.clone(), found: stray.clone() });
+    // isn't. The names still unmatched are all that is held: a name matched is dropped, and the
+    // reading stops when none is left.
+    let mut pending: Vec<&String> = file.names.iter().collect();
+    while !pending.is_empty() {
+        let Some(name) = have.next() else { break };
+        pending.retain(|n| **n != name);
     }
-    Ok(())
+    match pending.first() {
+        Some(stray) => Err(VerifyError::Names { found: (*stray).clone() }),
+        None => Ok(()),
+    }
 }

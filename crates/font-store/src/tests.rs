@@ -36,6 +36,8 @@ struct Spec<'a> {
     /// More name records, after the others of their ID: platform (1 Mac Roman, 3 Windows Unicode),
     /// ID, language ID, text.
     more_names: &'a [(u16, u16, u16, &'a str)],
+    /// The subfamily names of the `fvar` table's named instances (with `axes`), one instance each.
+    instances: &'a [&'a str],
 }
 
 impl Default for Spec<'_> {
@@ -55,13 +57,14 @@ impl Default for Spec<'_> {
             typographic_style: None,
             axes: &[],
             more_names: &[],
+            instances: &[],
         }
     }
 }
 
 fn font_as(spec: &Spec<'_>) -> Vec<u8> {
     use write_fonts::FontBuilder;
-    use write_fonts::tables::fvar::{AxisInstanceArrays, Fvar, VariationAxisRecord};
+    use write_fonts::tables::fvar::{AxisInstanceArrays, Fvar, InstanceRecord, VariationAxisRecord};
     use write_fonts::tables::name::{Name, NameRecord};
     use write_fonts::tables::os2::{Os2, SelectionFlags};
     use write_fonts::types::{Fixed, NameId, Tag};
@@ -79,6 +82,9 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
         let encoding = if platform == 1 { 0 } else { 1 };
         NameRecord::new(platform, encoding, lang, NameId::new(id), text.to_string().into())
     }));
+    records.extend(
+        spec.instances.iter().enumerate().map(|(i, text)| NameRecord::new(3, 1, 0x409, NameId::new(300 + i as u16), text.to_string().into())),
+    );
     records.sort_by_key(|r| (r.platform_id, r.encoding_id, r.language_id, r.name_id));
     let mut builder = FontBuilder::new();
     builder.add_table(&Name::new(records)).unwrap();
@@ -124,7 +130,15 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
                 )
             })
             .collect();
-        builder.add_table(&Fvar::new(AxisInstanceArrays::new(axes, Vec::new()))).unwrap();
+        let instances = (0..spec.instances.len())
+            .map(|i| InstanceRecord {
+                subfamily_name_id: NameId::new(300 + i as u16),
+                flags: 0,
+                coordinates: spec.axes.iter().map(|&(_, _, default, _)| Fixed::from_f64(default.into())).collect(),
+                post_script_name_id: None,
+            })
+            .collect();
+        builder.add_table(&Fvar::new(AxisInstanceArrays::new(axes, instances))).unwrap();
     }
     builder.add_raw(Tag::new(b"glyf"), vec![0u8; 4]);
     builder.build()
@@ -911,9 +925,9 @@ fn without_postscript_names_a_style_is_one_of_the_files_readings() {
     assert_eq!(verify_face(&family, &file, &bytes), Ok(()));
 }
 
-// Invariant: a file is variable exactly when its entry lists axes, with at least each axis's
-// range (breaks if: either direction of the static/variable check, the range comparison, or the
-// lookup of an axis by tag changes).
+// Invariant: every style name an entry lists is one the face gives, with or without PostScript
+// names listed, and a named instance's counts, up to the format's 256 (breaks if: the check runs
+// only on one branch, the instances are not read or are cut short, or one listed name is enough).
 #[test]
 fn a_face_must_have_a_style_name_its_entry_lists() {
     let index = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
@@ -929,10 +943,7 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     assert_eq!(verify_face(&family, &file, &plain), Ok(()));
     // Every listed name must be the face's: one of them isn't enough.
     let (family, file) = entry(&plain, &["Weight 700", "Bold"]);
-    assert_eq!(
-        verify_face(&family, &file, &plain),
-        Err(VerifyError::Names { expected: vec!["Weight 700".into(), "Bold".into()], found: "Weight 700".into() })
-    );
+    assert_eq!(verify_face(&family, &file, &plain), Err(VerifyError::Names { found: "Weight 700".into() }));
     let regular = font_as(&Spec::default());
     let regular_entry = |names: &[&str]| {
         let (family, mut file) = entry_for(&index, "Regular", &regular);
@@ -940,10 +951,7 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
         (family, file)
     };
     let (family, file) = regular_entry(&["Regular", "Lumberboy"]);
-    assert_eq!(
-        verify_face(&family, &file, &regular),
-        Err(VerifyError::Names { expected: vec!["Regular".into(), "Lumberboy".into()], found: "Lumberboy".into() })
-    );
+    assert_eq!(verify_face(&family, &file, &regular), Err(VerifyError::Names { found: "Lumberboy".into() }));
     let (family, file) = regular_entry(&["Regular"]);
     assert_eq!(verify_face(&family, &file, &regular), Ok(()));
     // The typographic subfamily (ID 17) is the face's, and then the subfamily (ID 2) isn't.
@@ -951,14 +959,14 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     let (family, file) = entry(&split, &["Lumberboy"]);
     assert_eq!(verify_face(&family, &file, &split), Ok(()));
     let (family, file) = entry(&split, &["Bold"]);
-    assert_eq!(verify_face(&family, &file, &split), Err(VerifyError::Names { expected: vec!["Bold".into()], found: "Bold".into() }));
+    assert_eq!(verify_face(&family, &file, &split), Err(VerifyError::Names { found: "Bold".into() }));
     // So W0, W3 and W6 faces whose ID 2 says Regular aren't Regular.
     for (w, weight) in [("W0", 100), ("W3", 300), ("W6", 600)] {
         let face = font_as(&Spec { style: "Regular", weight, typographic_style: Some(w), ..Spec::default() });
         let (family, mut file) = entry_for(&index, "Regular", &face);
         file.weight = weight;
         file.names = vec!["Regular".into()];
-        assert_eq!(verify_face(&family, &file, &face), Err(VerifyError::Names { expected: vec!["Regular".into()], found: "Regular".into() }), "{w}");
+        assert_eq!(verify_face(&family, &file, &face), Err(VerifyError::Names { found: "Regular".into() }), "{w}");
         file.names = vec![w.into()];
         assert_eq!(verify_face(&family, &file, &face), Ok(()), "{w}");
     }
@@ -989,8 +997,57 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     // An entry that gives no names is not held to any.
     let (family, file) = entry(&plain, &[]);
     assert_eq!(verify_face(&family, &file, &plain), Ok(()));
+    // The names are checked whether or not the entry lists PostScript names.
+    let bare = |(family, mut file): (Family, FontFile)| {
+        file.postscript.clear();
+        (family, file)
+    };
+    let (family, file) = bare(entry(&plain, &["Bold"]));
+    assert_eq!(verify_face(&family, &file, &plain), Ok(()));
+    let (family, file) = bare(entry(&plain, &["Bold", "Lumberboy"]));
+    assert_eq!(verify_face(&family, &file, &plain), Err(VerifyError::Names { found: "Lumberboy".into() }));
 }
 
+// Invariant: a variable font's named instances give style names an entry may list, as many as the
+// format keeps (256), with or without PostScript names, and a name that no instance gives is
+// refused (breaks if: the instances are not read, are cut short at 64, or the check is skipped).
+#[test]
+fn a_named_instances_name_is_one_its_entry_may_list() {
+    let index = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
+    let axes: &[(&[u8; 4], f32, f32, f32)] = &[(b"wght", 100.0, 400.0, 900.0)];
+    for count in [1usize, 64, 65, 81, 256, 257] {
+        let texts: Vec<String> = (0..count).map(|i| format!("Instance {i}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let bytes = font_as(&Spec { axes, instances: &refs, ..Spec::default() });
+        let (family, mut file) = entry_for(&index, "Regular", &bytes);
+        file.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }];
+        // The entry lists up to the format's 256 of the instances, the last of them included.
+        let listed = count.min(256);
+        file.names = texts[..listed].to_vec();
+        file.names.push("Regular".into());
+        for postscript in [true, false] {
+            if !postscript {
+                file.postscript.clear();
+            }
+            assert_eq!(verify_face(&family, &file, &bytes), Ok(()), "{count} instances, postscript {postscript}");
+            let mut stray = file.clone();
+            stray.names.push("Not An Instance".into());
+            assert_eq!(verify_face(&family, &stray, &bytes), Err(VerifyError::Names { found: "Not An Instance".into() }), "{count}");
+        }
+    }
+    // Past the format's 256 the instances are not read: such a name is not one the entry can list.
+    let texts: Vec<String> = (0..257).map(|i| format!("Instance {i}")).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let bytes = font_as(&Spec { axes, instances: &refs, ..Spec::default() });
+    let (family, mut file) = entry_for(&index, "Regular", &bytes);
+    file.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }];
+    file.names = vec!["Instance 256".into()];
+    assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: "Instance 256".into() }));
+}
+
+// Invariant: a file is variable exactly when its entry lists axes, with at least each axis's
+// range (breaks if: either direction of the static/variable check, the range comparison, or the
+// lookup of an axis by tag changes).
 #[test]
 fn a_variable_file_must_have_the_axes_its_entry_lists() {
     let index = host_index_read();
@@ -1020,9 +1077,10 @@ fn a_variable_file_must_have_the_axes_its_entry_lists() {
 }
 
 // Invariant: damaged or hostile font bytes make `verify_face` answer, never panic: every prefix of
-// a font and each byte of it set to 0x00 and to 0xFF, each against two entries that list the
+// a font and each byte of it set to 0x00 and to 0xFF, each against four entries that list the
 // bytes' own size and sha256, so the checks after it are reached: one with a PostScript name and
-// one with none, which reaches the comparison of the style; the font has a `head` table, so that
+// one with none, which reaches the comparison of the style, each with and without style names, which
+// reach the font's named instances; the font has a `head` table, so that
 // is mutated too (breaks if: a table read or a name record is trusted). One small font: the sweep is quadratic in its size.
 #[test]
 fn hostile_font_bytes_never_panic_verify_face() {
@@ -1032,7 +1090,9 @@ fn hostile_font_bytes_never_panic_verify_face() {
         weight: 700,
         mac_italic: true,
         typographic: Some("Test Sans"),
+        typographic_style: Some("Heavy"),
         axes: &[(b"wght", 300.0, 700.0, 700.0)],
+        instances: &["Lumberboy"],
         ..Spec::default()
     });
     let check = |bytes: &[u8]| {
@@ -1040,9 +1100,14 @@ fn hostile_font_bytes_never_panic_verify_face() {
         file.axes = vec![Axis { tag: "wght".into(), min: 300.0, max: 700.0 }];
         let mut bare = file.clone();
         bare.postscript.clear();
-        (verify_face(&family, &file, bytes).is_ok(), verify_face(&family, &bare, bytes).is_ok())
+        // The same two, listing the font's style names: its own and its named instance's.
+        let mut named = file.clone();
+        named.names = vec!["Heavy".into(), "Lumberboy".into()];
+        let mut bare_named = bare.clone();
+        bare_named.names = named.names.clone();
+        [&file, &bare, &named, &bare_named].map(|entry| verify_face(&family, entry, bytes).is_ok())
     };
-    assert_eq!(check(&original), (true, true), "the unchanged file passes both entries, so the sweep reaches the checks");
+    assert_eq!(check(&original), [true; 4], "the unchanged file passes every entry, so the sweep reaches the checks");
     for end in 0..original.len() {
         check(&original[..end]);
     }

@@ -66,6 +66,8 @@ fn licence_name(id: &str) -> &str {
         "OFL" => tl!("SIL Open Font License"),
         "APACHE2" => tl!("Apache License 2.0"),
         "UFL" => tl!("Ubuntu Font Licence"),
+        "CC0" => tl!("CC0 1.0"),
+        "BITSTREAM-VERA" => tl!("Bitstream Vera Fonts Copyright"),
         other => other,
     }
 }

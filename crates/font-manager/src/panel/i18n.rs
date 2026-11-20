@@ -87,6 +87,8 @@ mod tests {
             "SIL Open Font License",
             "Apache License 2.0",
             "Ubuntu Font Licence",
+            "CC0 1.0",
+            "Bitstream Vera Fonts Copyright",
             "Google Fonts",
             "{source}: {error}",
         ];
