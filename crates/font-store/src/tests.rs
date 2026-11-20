@@ -421,6 +421,13 @@ fn a_static_file_s_own_name_yields_to_a_file_listed_by_its_weight() {
     let index = host_index_with("Test Wide Regular", vec![regular, named_entry("ofl/r4/Foo-Book.ttf", 400, &["Book"])]);
     assert_eq!(found(&index, "Test Wide Regular", "Regular"), "FooWide-Regular.ttf");
     assert_eq!(found(&index, "Test Wide Regular", "Book"), "Foo-Book.ttf");
+    // A weight with a name is listed by that name, never its number: a file that calls itself 700
+    // keeps it beside a variable file reaching 700, but one that calls itself 450 yields.
+    let var = |path: &str| file_entry(path, b"variable", "normal", 400, json!([{"tag": "wght", "min": 100.0, "max": 900.0}]), &[]);
+    let index = host_index_with("Test Number", vec![named_entry("ofl/n7/Seven.ttf", 600, &["700"]), var("ofl/n7/Var[wght].ttf")]);
+    assert_eq!(found(&index, "Test Number", "700"), "Seven.ttf");
+    let index = host_index_with("Test Unnamed", vec![named_entry("ofl/n4/Four.ttf", 500, &["450"]), var("ofl/n4/Var[wght].ttf")]);
+    assert_eq!(found(&index, "Test Unnamed", "450"), "Var[wght].ttf");
     // Alone, it is found by its name.
     let mut wide = named_entry("ofl/wa/FooWide-Bold.ttf", 700, &["Bold"]);
     wide["width"] = json!(112.5);

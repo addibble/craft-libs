@@ -122,8 +122,10 @@ pub fn is_font(bytes: &[u8]) -> bool {
 ///    least the range the entry gives;
 /// 3. the entry's PostScript name (ID 6), when the entry lists any: one of them, exactly.
 ///
-/// 4. the entry's style names, when the entry lists any: the face's own style name (ID 17, else
-///    ID 2) or a named instance's subfamily name is one of them, exactly.
+/// 4. the entry's style names, when the entry lists any: every one of them is one of the face's
+///    own style names, exactly: any record of its typographic subfamily (ID 17), of any platform
+///    or language; any record of its subfamily (ID 2) when it has no ID 17 or its first or English
+///    ID 17 record is empty; or a record of a named instance's subfamily name.
 ///
 /// The error is the first check the best-matching face failed. A file of another family, style
 /// or PostScript name fails even when its bytes have the index's sha256, as they do if the index
@@ -215,6 +217,8 @@ fn check_face(family: &Family, file: &FontFile, font: &FontRef<'_>) -> Result<()
         let english_empty = typographic.english_or_first().is_some_and(|s| s.to_string().is_empty());
         let subfamily = if first_empty || english_empty { names(font, StringId::SUBFAMILY_NAME) } else { vec![] };
         let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).flat_map(|i| names(font, i.subfamily_name_id()));
+        // At most 4096 names, so a hostile font's records (MAX_NAME_RECORDS per ID and per
+        // instance) can't grow the list without bound.
         let have: Vec<String> =
             names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME).into_iter().chain(subfamily).chain(instances).take(MAX_NAME_RECORDS * 8).collect();
         // Every listed name, not one of them: a name the face doesn't give would find it by a

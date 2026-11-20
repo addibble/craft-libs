@@ -73,6 +73,12 @@ Reading checks every entry: the version (a major version other than 1 is refused
 
 A family without the style asked for is `Unavailable::NoStyle`: the store never offers a nearer weight or a similar family. Substitution stays a separate choice in each app.
 
+Known gaps in matching a file's own style `names`:
+
+- A static file of another width whose only name is a weight's word (a wide face named `Bold`), beside a file of normal width listed by that word, yields that style to it: the wide face is listed by no style of its own, and its style fetches the face of normal width.
+- After a static file yields a style, `find_face` returns the weight lookup's pick, not necessarily the file whose listing justified the yield.
+- `verify_face` reads at most 4096 of a face's style name records, so a listed name past them is refused. Walking the records lazily is the follow-up.
+
 ## Installing
 
 ```rust
@@ -105,7 +111,7 @@ When every file has passed, the store takes `.lock`, moves the files into the fa
 2. that some face of the file (any face of a collection) is the entry's family: its typographic family name (name ID 16), or its legacy family name (ID 1) when it has none, equal to `family.family` ignoring case, as the index compares family names (`VerifyError::Family`);
 3. that the face has the entry's style: the `OS/2` weight and width class and the italic or oblique flag equal the entry's `weight`, `width` and `style`, a file is variable exactly when the entry lists axes, and each axis has at least the range the entry gives (`VerifyError::Style`, `VerifyError::Axis`);
 4. when the entry lists PostScript names, that the face's (ID 6) is one of them, exactly (`VerifyError::PostScript`);
-5. when the entry lists style `names` (format 1.3), that every one of them is one of the face's own style names: any record of name ID 17 or ID 2, of any platform or language (a builder may take the first record or prefer Windows English), or of a named instance's subfamily name, exactly (`VerifyError::Names`).
+5. when the entry lists style `names` (format 1.3), that every one of them is one of the face's own style names: any record of its typographic subfamily (name ID 17), of any platform or language (a builder may take the first record or prefer Windows English); any record of its subfamily (ID 2) when it has no ID 17 or its first or English ID 17 record is empty; or a record of a named instance's subfamily name, exactly (`VerifyError::Names`).
 
 When no face passes, the error is the one the nearest face failed with; each says what it expected and what it found. An install that fails a check fails its source, and nothing in the file is used. The store's own installs check with `verify_font` only: their indexes are curated or added by the user, who has chosen to trust them.
 

@@ -360,8 +360,9 @@ impl Family {
 }
 
 /// Whether a family's listing of a weight names it `squashed` (a style compared as
-/// [`Family::face`] compares names): its weight's name (`Regular`, `Bold Italic`; `Italic` at 400)
-/// or its number (`450`, `450 Italic`).
+/// [`Family::face`] compares names): its weight's name (`Regular`, `Bold Italic`; `Italic` at 400),
+/// or its number (`450`, `450 Italic`) for a weight with no name: 700 is listed as Bold, never as
+/// `700`.
 fn weight_listing_spells(squashed: &str, weight: u16, italic: bool) -> bool {
     let name = match weight {
         100 => "thin",
@@ -381,7 +382,10 @@ fn weight_listing_spells(squashed: &str, weight: u16, italic: bool) -> bool {
         ("regular", true) => Some("italic".to_string()),
         (n, _) => Some(format!("{n}{slant}")),
     };
-    named.is_some_and(|n| n == squashed) || format!("{weight}{slant}") == squashed
+    match named {
+        Some(n) => n == squashed,
+        None => format!("{weight}{slant}") == squashed,
+    }
 }
 
 /// Letters and digits only, lowercased: `Bold Italic`, `bold-italic` and `BoldItalic` are equal.
