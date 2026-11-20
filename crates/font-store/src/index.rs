@@ -120,9 +120,6 @@ pub struct FontFile {
     /// each named instance's. Empty when the entry lists none.
     #[serde(default)]
     pub names: Vec<String>,
-    /// `names` compared as [`Family::face`] compares them: letters and digits only, lowercased.
-    #[serde(skip)]
-    pub(crate) squashed_names: Vec<String>,
     /// The repository holding the file, when not the family's.
     #[serde(default)]
     pub repo: Option<String>,
@@ -141,14 +138,9 @@ fn normal_width() -> f32 {
 
 impl FontFile {
     /// Whether one of the file's own style `names` is `squashed` (a style compared as
-    /// [`Family::face`] compares names). The names are squashed when the index is read; an entry
-    /// built or changed since is squashed here.
+    /// [`Family::face`] compares names).
     fn names_style(&self, squashed: &str) -> bool {
-        if self.squashed_names.len() == self.names.len() {
-            self.squashed_names.iter().any(|n| n == squashed)
-        } else {
-            self.names.iter().any(|n| squash(n) == squashed)
-        }
+        self.names.iter().any(|n| squash(n) == squashed)
     }
 
     /// The file's name, the last part of its path.
@@ -329,7 +321,7 @@ impl Family {
 }
 
 /// Letters and digits only, lowercased: `Bold Italic`, `bold-italic` and `BoldItalic` are equal.
-pub(crate) fn squash(s: &str) -> String {
+fn squash(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 

@@ -55,7 +55,7 @@ A file's URLs come from its source's URL templates, best first. Both built-in so
 | `Index::from_bytes(bytes)`, `Index::from_user_bytes(bytes, url)`, `Index::from_host_bytes(bytes, id)` | One index file, JSON or gzipped JSON. |
 | `Index::merge(indexes)` | One index of several. |
 
-Reading checks every entry: the version (a major version other than 1 is refused; unknown fields are ignored), https URL templates, safe relative paths (no empty, `.` or `..` segment, no `\`), safe and unique file names, `owner/name` repositories and refs, sha256s, sizes, weights and widths, and at most 256 style `names` per file. A format 1.0 index is Google Fonts, with URLs from its `base_url` and `fallback_base_url`.
+Reading checks every entry: the version (a major version other than 1 is refused; unknown fields are ignored), https URL templates, safe relative paths (no empty, `.` or `..` segment, no `\`), safe and unique file names, `owner/name` repositories and refs, sha256s, sizes, weights and widths. A file's style `names` never refuse an entry: an empty one, one too long or with a control character is dropped, and only the first 256 are kept. A format 1.0 index is Google Fonts, with URLs from its `base_url` and `fallback_base_url`.
 
 | Call | What it gives |
 |---|---|

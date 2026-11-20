@@ -322,11 +322,11 @@ fn a_style_is_found_by_the_name_the_font_itself_uses() {
     let plain = index_of(&fixture().index).unwrap();
     assert!(plain.family("Test Sans").unwrap().files.iter().all(|f| f.names.is_empty()));
     assert!(matches!(plain.find_face("Test Var", "Weight 450"), Err(Unavailable::NoStyle { .. })));
-    // An entry's style names are checked like its PostScript names: a family with a bad one is left out.
-    for bad in [json!([""]), json!(["a\u{7}b"])] {
-        let broken = with("Test Sans", "TestSans-Bold.ttf", &|f| f["names"] = bad.clone());
-        assert!(index_of(&broken).map_or(true, |i| i.family("Test Sans").is_none()), "{bad}");
-    }
+    // A bad style name (empty, a control character, too long) is dropped; the entry and its other names stay.
+    let long = "x".repeat(10_000);
+    let kept = with("Test Sans", "TestSans-Bold.ttf", &|f| f["names"] = json!(["", "Lumberboy", "a\u{7}b", long]));
+    let kept = index_of(&kept).unwrap();
+    assert_eq!(kept.family("Test Sans").unwrap().face("Lumberboy").unwrap().names, ["Lumberboy"]);
 }
 
 /// A host index with `files` (path, weight, own style names) as the family `name`, beside the
@@ -379,10 +379,11 @@ fn style_names_are_bounded() {
         edit(&mut f["files"][0]);
         Index::from_host_bytes(v.to_string().as_bytes(), "page")
     };
-    // A bad entry refuses the index, or leaves its family out.
+    // Style names never refuse the index or leave the family out: past 256 they are dropped.
     let kept = |index: &Result<Index, IndexError>| index.as_ref().is_ok_and(|i| i.family("Test Var").is_some());
-    assert!(kept(&with(&|f| f["names"] = json!(names(256)))));
-    assert!(!kept(&with(&|f| f["names"] = json!(names(257)))), "more than 256 style names");
+    let listed = |index: Result<Index, IndexError>| index.unwrap().family("Test Var").unwrap().files[0].names.clone();
+    assert_eq!(listed(with(&|f| f["names"] = json!(names(256)))), names(256));
+    assert_eq!(listed(with(&|f| f["names"] = json!(names(300)))), names(256), "the first 256 of 300");
     // An entry's instances are not read.
     let index = with(&|f| f["instances"] = json!([{"name": "Bold", "coordinates": {"weight": "bad"}}]));
     assert!(kept(&index), "instances are ignored");

@@ -11,7 +11,7 @@ use crate::index::{
 
 pub(crate) const MAX_STR: usize = 1024;
 const MAX_LIST: usize = 4096;
-/// The most style names a file's entry may list (craft-font-index format).
+/// The most style names a file's entry keeps (craft-font-index format); the rest are dropped.
 const MAX_NAMES: usize = 256;
 const MAX_FAMILIES: usize = 50_000;
 const MAX_FILES: usize = 200_000;
@@ -476,8 +476,8 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
             return invalid(format!("`{}` has width {}", short(&f.path), f.width));
         }
         check_str("style", &f.style)?;
-        if f.axes.len() > 64 || f.postscript.len() > MAX_LIST || f.names.len() > MAX_NAMES {
-            return invalid(format!("`{}` has too many axes, PostScript names or style names", short(&f.path)));
+        if f.axes.len() > 64 || f.postscript.len() > MAX_LIST {
+            return invalid(format!("`{}` has too many axes or PostScript names", short(&f.path)));
         }
         for a in &f.axes {
             if a.tag.len() != 4 || !a.tag.is_ascii() || !a.min.is_finite() || !a.max.is_finite() || a.min > a.max {
@@ -488,12 +488,6 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
             check_str("PostScript name", ps)?;
             if ps.is_empty() {
                 return invalid(format!("`{}` has an empty PostScript name", short(&f.path)));
-            }
-        }
-        for name in &f.names {
-            check_str("style name", name)?;
-            if name.is_empty() {
-                return invalid(format!("`{}` has an empty style name", short(&f.path)));
             }
         }
         check_repo_ref(&f.path, f.repo.as_deref(), f.git_ref.as_deref())?;
@@ -520,8 +514,11 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
         }
     }
     fam.dir = if ctx.google { google_dir(fam)? } else { format!("{}/{}", ctx.slug, slug(&fam.family)) };
+    // Style names only help find a face: a bad one (empty, too long, a control character) is
+    // dropped and the rest kept to the first MAX_NAMES, never refusing the entry.
     for f in &mut fam.files {
-        f.squashed_names = f.names.iter().map(|n| crate::index::squash(n)).collect();
+        f.names.retain(|n| !n.is_empty() && check_str("style name", n).is_ok());
+        f.names.truncate(MAX_NAMES);
     }
     Ok(())
 }
