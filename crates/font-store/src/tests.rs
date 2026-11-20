@@ -329,45 +329,65 @@ fn a_style_is_found_by_the_name_the_font_itself_uses() {
     assert_eq!(kept.family("Test Sans").unwrap().face("Lumberboy").unwrap().names, ["Lumberboy"]);
 }
 
-/// A host index with `files` (path, weight, own style names) as the family `name`, beside the
-/// fixture's families.
-fn host_index_with(name: &str, files: &[(&str, u16, &[&str])]) -> Index {
+/// A file's entry: a static file at `weight` with its own style `names`.
+fn named_entry(path: &str, weight: u16, names: &[&str]) -> serde_json::Value {
+    let mut e = file_entry(path, path.as_bytes(), "normal", weight, json!([]), &[]);
+    if !names.is_empty() {
+        e["names"] = json!(names);
+    }
+    e
+}
+
+/// A host index with the family `name` of `files` (their entries), beside the fixture's families.
+fn host_index_with(name: &str, files: Vec<serde_json::Value>) -> Index {
     let mut v = host_index();
     let mut family = v["families"][0].clone();
     family["family"] = json!(name);
-    family["files"] = json!(
-        files
-            .iter()
-            .map(|&(path, weight, names)| {
-                let mut e = file_entry(path, path.as_bytes(), "normal", weight, json!([]), &[]);
-                e["names"] = json!(names);
-                e
-            })
-            .collect::<Vec<_>>()
-    );
+    family["files"] = json!(files);
     v["families"].as_array_mut().unwrap().push(family);
     Index::from_host_bytes(v.to_string().as_bytes(), "page").unwrap()
 }
 
 #[test]
 fn a_static_file_is_found_by_its_own_name_before_a_weight() {
-    // Book at 300: "Book" is also a weight's word (400), which Roman has.
-    let index = host_index_with("Test Names", &[("ofl/n/Book.otf", 300, &["Book"]), ("ofl/n/Roman.otf", 400, &["Roman"])]);
-    let name = |style: &str| index.find_face("Test Names", style).map(|f| f.file.file_name().to_string());
-    assert_eq!(name("Book").unwrap(), "Book.otf");
-    assert_eq!(name("book").unwrap(), "Book.otf");
-    assert_eq!(name("Roman").unwrap(), "Roman.otf");
-    assert_eq!(name("400").unwrap(), "Roman.otf", "a weight is still found by its number");
-    assert_eq!(name("300").unwrap(), "Book.otf");
+    let found = |index: &Index, family: &str, style: &str| index.find_face(family, style).map(|f| f.file.file_name().to_string()).unwrap();
+    // Book at 300: "Book" is also a weight's word (400), which Roman has, but Roman is listed by its own name.
+    let index = host_index_with("Test Names", vec![named_entry("ofl/n/Book.otf", 300, &["Book"]), named_entry("ofl/n/Roman.otf", 400, &["Roman"])]);
+    assert_eq!(found(&index, "Test Names", "Book"), "Book.otf");
+    assert_eq!(found(&index, "Test Names", "book"), "Book.otf");
+    assert_eq!(found(&index, "Test Names", "Roman"), "Roman.otf");
+    assert_eq!(found(&index, "Test Names", "400"), "Roman.otf", "a weight is still found by its number");
+    assert_eq!(found(&index, "Test Names", "300"), "Book.otf");
     // Two files call themselves Regular: the one at the weight the word spells, wherever it is listed.
-    let index = host_index_with("Test Regulars", &[("ofl/r/Medium.otf", 500, &["Regular"]), ("ofl/r/Regular.otf", 400, &["Regular"])]);
-    let name = |style: &str| index.find_face("Test Regulars", style).map(|f| f.file.file_name().to_string());
-    assert_eq!(name("Regular").unwrap(), "Regular.otf");
-    assert_eq!(name("500").unwrap(), "Medium.otf");
-    assert_eq!(name("Medium").unwrap(), "Medium.otf");
+    let index = host_index_with(
+        "Test Regulars",
+        vec![named_entry("ofl/r/Medium.otf", 500, &["Regular"]), named_entry("ofl/r/Regular.otf", 400, &["Regular"])],
+    );
+    assert_eq!(found(&index, "Test Regulars", "Regular"), "Regular.otf");
+    assert_eq!(found(&index, "Test Regulars", "500"), "Medium.otf");
+    assert_eq!(found(&index, "Test Regulars", "Medium"), "Medium.otf");
     // Alone, the file at 500 that calls itself Regular is found by it.
-    let index = host_index_with("Test Sharp", &[("ofl/s/Sharp.ttf", 500, &["Regular"])]);
-    assert_eq!(index.find_face("Test Sharp", "Regular").unwrap().file.file_name(), "Sharp.ttf");
+    let index = host_index_with("Test Sharp", vec![named_entry("ofl/s/Sharp.ttf", 500, &["Regular"])]);
+    assert_eq!(found(&index, "Test Sharp", "Regular"), "Sharp.ttf");
+    // Of two at the spelled weight, the one of normal width, though the condensed one is listed first.
+    let mut condensed = named_entry("ofl/c/Condensed.ttf", 400, &["Regular"]);
+    condensed["width"] = json!(75.0);
+    let index = host_index_with("Test Widths", vec![condensed, named_entry("ofl/c/Regular.ttf", 400, &["Regular"])]);
+    assert_eq!(found(&index, "Test Widths", "Regular"), "Regular.ttf");
+}
+
+#[test]
+fn a_static_file_s_own_name_yields_to_a_file_listed_by_its_weight() {
+    let found = |index: &Index, family: &str, style: &str| index.find_face(family, style).map(|f| f.file.file_name().to_string()).unwrap();
+    // A variable file reaching 400 is listed by its weight names, Regular among them.
+    let var = file_entry("ofl/v/Var[wght].ttf", b"variable", "normal", 400, json!([{"tag": "wght", "min": 300.0, "max": 700.0}]), &[]);
+    let index = host_index_with("Test Yield Var", vec![named_entry("ofl/v/Sharp.ttf", 500, &["Regular"]), var]);
+    assert_eq!(found(&index, "Test Yield Var", "Regular"), "Var[wght].ttf");
+    // So is a static file at 400 with no names of its own.
+    let index =
+        host_index_with("Test Yield Plain", vec![named_entry("ofl/p/Sharp.ttf", 500, &["Regular"]), named_entry("ofl/p/Regular.ttf", 400, &[])]);
+    assert_eq!(found(&index, "Test Yield Plain", "Regular"), "Regular.ttf");
+    assert_eq!(found(&index, "Test Yield Plain", "500"), "Sharp.ttf");
 }
 
 #[test]

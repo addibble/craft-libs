@@ -273,18 +273,31 @@ impl Family {
     /// spaces and punctuation. A static file whose own names include the style comes first, so a
     /// file whose name table calls its weight by a weight's word (`Book` at 300) is found by it
     /// though another file has that weight; of several, the one at the weight and slant the word
-    /// spells. Then a variable font has every weight its `wght` axis reaches, and a static file of
-    /// normal width is preferred for a weight. No nearer style is offered: a style the family
-    /// doesn't have is [`Unavailable::NoStyle`].
+    /// spells, then one of normal width. Such a file not at that weight yields to a file the word
+    /// lists by its weight: a variable font reaching it, or a static file at it with no names of
+    /// its own (`Regular` at 500 beside a plain Regular). Then a variable font has every weight its
+    /// `wght` axis reaches, and a static file of normal width is preferred for a weight. No nearer
+    /// style is offered: a style the family doesn't have is [`Unavailable::NoStyle`].
     pub fn face(&self, style: &str) -> Result<&FontFile, Unavailable> {
         let no_style = || Unavailable::NoStyle { family: self.family.clone(), style: style.to_string() };
         let wanted = squash(style);
         let parsed = parse_style(style);
         if !wanted.is_empty() {
-            let mut named = self.files.iter().filter(|f| !f.is_variable() && f.names_style(&wanted));
-            let first = named.next();
-            let spelled = |f: &&FontFile| parsed.is_some_and(|(w, i)| f.weight == w && f.is_italic() == i);
-            if let Some(f) = first.filter(spelled).or_else(|| named.find(spelled)).or(first) {
+            let spelled = |f: &FontFile| parsed.is_some_and(|(w, i)| f.weight == w && f.is_italic() == i);
+            let rank = |f: &FontFile| (spelled(f), f.has_normal_width());
+            // The first of the best: at the spelled weight, then of normal width.
+            let best = self
+                .files
+                .iter()
+                .filter(|f| !f.is_variable() && f.names_style(&wanted))
+                .fold(None::<&FontFile>, |best, f| if best.is_some_and(|b| rank(b) >= rank(f)) { best } else { Some(f) });
+            let listed_by_weight = parsed.is_some_and(|(w, i)| {
+                self.files.iter().any(|f| {
+                    f.has_normal_width()
+                        && if f.is_variable() { f.has_weight(w, i) } else { f.names.is_empty() && f.weight == w && f.is_italic() == i }
+                })
+            });
+            if let Some(f) = best.filter(|f| spelled(f) || !listed_by_weight) {
                 return Ok(f);
             }
         }
