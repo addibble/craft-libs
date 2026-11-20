@@ -38,6 +38,8 @@ struct Spec<'a> {
     more_names: &'a [(u16, u16, u16, &'a str)],
     /// The subfamily names of the `fvar` table's named instances (with `axes`), one instance each.
     instances: &'a [&'a str],
+    /// Every instance names its subfamily with the first of `instances`' name ID (300).
+    shared_instance_name: bool,
 }
 
 impl Default for Spec<'_> {
@@ -58,6 +60,7 @@ impl Default for Spec<'_> {
             axes: &[],
             more_names: &[],
             instances: &[],
+            shared_instance_name: false,
         }
     }
 }
@@ -83,7 +86,11 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
         NameRecord::new(platform, encoding, lang, NameId::new(id), text.to_string().into())
     }));
     records.extend(
-        spec.instances.iter().enumerate().map(|(i, text)| NameRecord::new(3, 1, 0x409, NameId::new(300 + i as u16), text.to_string().into())),
+        spec.instances
+            .iter()
+            .enumerate()
+            .take(if spec.shared_instance_name { 1 } else { usize::MAX })
+            .map(|(i, text)| NameRecord::new(3, 1, 0x409, NameId::new(300 + i as u16), text.to_string().into())),
     );
     records.sort_by_key(|r| (r.platform_id, r.encoding_id, r.language_id, r.name_id));
     let mut builder = FontBuilder::new();
@@ -132,7 +139,7 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
             .collect();
         let instances = (0..spec.instances.len())
             .map(|i| InstanceRecord {
-                subfamily_name_id: NameId::new(300 + i as u16),
+                subfamily_name_id: NameId::new(if spec.shared_instance_name { 300 } else { 300 + i as u16 }),
                 flags: 0,
                 coordinates: spec.axes.iter().map(|&(_, _, default, _)| Fixed::from_f64(default.into())).collect(),
                 post_script_name_id: None,
@@ -769,7 +776,6 @@ fn a_host_index_is_never_curated_and_cant_shadow_another_source() {
     std::io::Write::write_all(&mut gz, v.to_string().as_bytes()).unwrap();
     let zipped = Index::from_host_bytes(&gz.finish().unwrap(), "page.1").unwrap();
     assert_eq!(zipped.sources()[0].id, "host:page.1");
-    // A host's index that declares a built-in source's ID is still its own source.
     // An ID that spells a user's (`user:<host>/<id>`) is not a valid declared ID, for a host's index
     // or a user's.
     let mut user_like = v.clone();
@@ -778,11 +784,12 @@ fn a_host_index_is_never_curated_and_cant_shadow_another_source() {
     let bytes = user_like.to_string().into_bytes();
     assert!(matches!(Index::from_host_bytes(&bytes, "page.1"), Err(IndexError::Invalid(_))));
     assert!(Index::from_user_bytes(&bytes, "https://fonts.host.example/index.json").is_err());
-    // One that merely looks like one, with no colon, is kept as written and the source is still `host:<id>`.
+    // One that merely looks like one, with no colon, is accepted and the source is still `host:<id>`.
     user_like["source"] = json!("user-fonts.host.example/index");
     user_like["source_info"]["id"] = json!("user-fonts.host.example/index");
     let user_like = Index::from_host_bytes(user_like.to_string().as_bytes(), "page.1").unwrap();
     assert_eq!((user_like.sources()[0].id.as_str(), user_like.sources()[0].user_url.as_deref()), ("host:page.1", None));
+    // A host's index that declares a built-in source's ID is still its own source.
     let mut google = v.clone();
     google["source"] = json!(GOOGLE_FONTS);
     google["source_info"]["id"] = json!(GOOGLE_FONTS);
@@ -952,6 +959,10 @@ fn a_host_index_leaves_out_collections_with_a_warning() {
     assert!(warning.starts_with("Test Many is left out:"), "{warning}");
     assert_eq!(warning.matches(".ttc").count(), 3, "{warning}");
     assert!(warning.contains("Many-0.ttc") && warning.contains("Many-2.ttc") && warning.ends_with(" and 1 more)"), "{warning}");
+    // Exactly three are all named, with no count of the rest.
+    let index = Index::from_host_bytes(&many(3), "page").unwrap();
+    let warning = index.sources()[0].warnings.iter().find(|w| w.contains("Test Many")).unwrap();
+    assert!(warning.ends_with("Many-2.ttc`)") && !warning.contains("more"), "{warning}");
     // Every file counts toward the limit, collections too: the user's rule, exactly.
     let base: usize = host_index_read().families().iter().map(|f| f.files.len()).sum();
     let limit = base + 8;
@@ -1209,6 +1220,23 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     assert_eq!(verify_face(&family, &file, &plain), Ok(()));
     let (family, file) = bare(entry(&plain, &["Bold", "Lumberboy"]));
     assert_eq!(verify_face(&family, &file, &plain), Err(VerifyError::Names { found: "Lumberboy".into() }));
+}
+
+// Invariant: instances that share one subfamily name ID still give that name, and only that one
+// (breaks if: a shared ID's names are lost, or an ID the font doesn't have is read). This tests the
+// result only: the crate has no way to count how many times a name ID is scanned.
+#[test]
+fn instances_sharing_a_name_id_give_its_names() {
+    let index = host_index_read();
+    let axes: &[(&[u8; 4], f32, f32, f32)] = &[(b"wght", 100.0, 400.0, 900.0)];
+    let bytes =
+        font_as(&Spec { axes, instances: &["Shared Name", "Never Written", "Never Written Either"], shared_instance_name: true, ..Spec::default() });
+    let (family, mut file) = entry_for(&index, "Regular", &bytes);
+    file.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }];
+    file.names = vec!["Shared Name".into(), "Regular".into()];
+    assert_eq!(verify_face(&family, &file, &bytes), Ok(()));
+    file.names = vec!["Never Written".into()];
+    assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: "Never Written".into() }));
 }
 
 // Invariant: a variable font's named instances give style names an entry may list, as many as the
