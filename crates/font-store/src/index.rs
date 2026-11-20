@@ -273,9 +273,11 @@ impl Family {
     /// spaces and punctuation. A static file whose own names include the style comes first, so a
     /// file whose name table calls its weight by a weight's word (`Book` at 300) is found by it
     /// though another file has that weight; of several, the one at the weight and slant the word
-    /// spells, then one of normal width. Such a file not at that weight yields to a file the word
-    /// lists by its weight: a variable font reaching it, or a static file at it with no names of
-    /// its own (`Regular` at 500 beside a plain Regular). Then a variable font has every weight its
+    /// spells, then one of normal width. Such a file of another width yields to a file of normal
+    /// width at that weight (`Bold` of a wide face beside a variable font reaching 700); one not
+    /// at that weight yields only when a file is listed by its weight under that very word, its
+    /// weight's name or number (`Regular` at 500 beside a plain Regular or a variable font reaching
+    /// 400, but not `Book` at 300, since no weight is listed as Book). Then a variable font has every weight its
     /// `wght` axis reaches, and a static file of normal width is preferred for a weight. No nearer
     /// style is offered: a style the family doesn't have is [`Unavailable::NoStyle`].
     pub fn face(&self, style: &str) -> Result<&FontFile, Unavailable> {
@@ -291,14 +293,22 @@ impl Family {
                 .iter()
                 .filter(|f| !f.is_variable() && f.names_style(&wanted))
                 .fold(None::<&FontFile>, |best, f| if best.is_some_and(|b| rank(b) >= rank(f)) { best } else { Some(f) });
-            let listed_by_weight = parsed.is_some_and(|(w, i)| {
-                self.files.iter().any(|f| {
-                    f.has_normal_width()
-                        && if f.is_variable() { f.has_weight(w, i) } else { f.names.is_empty() && f.weight == w && f.is_italic() == i }
-                })
-            });
-            if let Some(f) = best.filter(|f| spelled(f) || !listed_by_weight) {
-                return Ok(f);
+            if let Some(f) = best {
+                let at_normal_width = |(w, i): (u16, bool)| self.files.iter().any(|g| g.has_normal_width() && g.has_weight(w, i));
+                // A file a weight's listing names by this very word: a variable font reaching the
+                // weight, or a static file at it with no names of its own.
+                let listed_by_weight = |(w, i): (u16, bool)| {
+                    weight_listing_spells(&wanted, w, i)
+                        && self.files.iter().any(|g| {
+                            g.has_normal_width()
+                                && if g.is_variable() { g.has_weight(w, i) } else { g.names.is_empty() && g.weight == w && g.is_italic() == i }
+                        })
+                };
+                let wider = !f.has_normal_width() && parsed.is_some_and(at_normal_width);
+                let yields = wider || (!spelled(f) && parsed.is_some_and(listed_by_weight));
+                if !yields {
+                    return Ok(f);
+                }
             }
         }
         if let Some((weight, italic)) = parsed {
@@ -331,6 +341,31 @@ impl Family {
     pub fn size(&self) -> u64 {
         self.files.iter().map(|f| f.size).sum()
     }
+}
+
+/// Whether a family's listing of a weight names it `squashed` (a style compared as
+/// [`Family::face`] compares names): its weight's name (`Regular`, `Bold Italic`; `Italic` at 400)
+/// or its number (`450`, `450 Italic`).
+fn weight_listing_spells(squashed: &str, weight: u16, italic: bool) -> bool {
+    let name = match weight {
+        100 => "thin",
+        200 => "extralight",
+        300 => "light",
+        400 => "regular",
+        500 => "medium",
+        600 => "semibold",
+        700 => "bold",
+        800 => "extrabold",
+        900 => "black",
+        _ => "",
+    };
+    let slant = if italic { "italic" } else { "" };
+    let named = match (name, italic) {
+        ("", _) => None,
+        ("regular", true) => Some("italic".to_string()),
+        (n, _) => Some(format!("{n}{slant}")),
+    };
+    named.is_some_and(|n| n == squashed) || format!("{weight}{slant}") == squashed
 }
 
 /// Letters and digits only, lowercased: `Bold Italic`, `bold-italic` and `BoldItalic` are equal.

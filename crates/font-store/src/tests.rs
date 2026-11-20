@@ -396,6 +396,24 @@ fn a_static_file_s_own_name_yields_to_a_file_listed_by_its_weight() {
         host_index_with("Test Yield Plain", vec![named_entry("ofl/p/Sharp.ttf", 500, &["Regular"]), named_entry("ofl/p/Regular.ttf", 400, &[])]);
     assert_eq!(found(&index, "Test Yield Plain", "Regular"), "Regular.ttf");
     assert_eq!(found(&index, "Test Yield Plain", "500"), "Sharp.ttf");
+    // But no weight is listed as Book: Book at 300 keeps it beside a plain Roman or a variable file at 400.
+    let index = host_index_with("Test Book Plain", vec![named_entry("ofl/b/Book.otf", 300, &["Book"]), named_entry("ofl/b/Roman.otf", 400, &[])]);
+    assert_eq!(found(&index, "Test Book Plain", "Book"), "Book.otf");
+    assert_eq!(found(&index, "Test Book Plain", "Regular"), "Roman.otf");
+    let var = file_entry("ofl/bv/Var[wght].ttf", b"variable", "normal", 400, json!([{"tag": "wght", "min": 300.0, "max": 700.0}]), &[]);
+    let index = host_index_with("Test Book Var", vec![named_entry("ofl/bv/Book.otf", 300, &["Book"]), var]);
+    assert_eq!(found(&index, "Test Book Var", "Book"), "Book.otf");
+    // A wide face named Bold yields to a file of normal width at 700.
+    let mut wide = named_entry("ofl/w/FooWide-Bold.ttf", 700, &["Bold"]);
+    wide["width"] = json!(112.5);
+    let var = file_entry("ofl/w/Foo[wght].ttf", b"variable", "normal", 400, json!([{"tag": "wght", "min": 100.0, "max": 900.0}]), &[]);
+    let index = host_index_with("Test Wide", vec![wide, var]);
+    assert_eq!(found(&index, "Test Wide", "Bold"), "Foo[wght].ttf");
+    // Alone, it is found by its name.
+    let mut wide = named_entry("ofl/wa/FooWide-Bold.ttf", 700, &["Bold"]);
+    wide["width"] = json!(112.5);
+    let index = host_index_with("Test Wide Alone", vec![wide]);
+    assert_eq!(found(&index, "Test Wide Alone", "Bold"), "FooWide-Bold.ttf");
 }
 
 #[test]
