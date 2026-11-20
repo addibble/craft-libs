@@ -183,8 +183,8 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 ///
 /// The work is bounded: one sha256 pass, one table directory, and for each of the name IDs 16, 1,
 /// 6 and 2, for ID 17 (scanned up to three times) and for each of the first 256 named instances'
-/// subfamily name IDs, at most 65,535 record headers scanned, at most 64 records decoded and at
-/// most 1,025 characters of each; only names of at most 1,024 characters are compared, a name past
+/// subfamily name IDs, at most 65,535 record headers scanned, at most 64 non-empty records kept
+/// and at most 1,025 characters of each decoded; only names of at most 1,024 characters are compared, a name past
 /// the first 64 non-empty records of its ID is not seen, a file's names come only from its own style name and
 /// the first 256 named instances, and an entry listing more than 256 names is refused.
 pub fn verify_face(family: &Family, file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
@@ -305,9 +305,10 @@ fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
         return Err(VerifyError::TooManyNames { count: file.names.len() });
     }
     // Every record of the typographic subfamily (ID 17), whatever platform and language: an
-    // index's builder may pick any (the first record, or Windows English first). The subfamily
-    // (ID 2) only where a builder falls back to it: no ID 17, or an empty first or English one. A
-    // face whose ID 17 says W6 isn't Regular because its ID 2 says so.
+    // index's builder lists the first non-empty record, the only rule that always agrees with this
+    // check. The
+    // subfamily (ID 2) only where a builder falls back to it: no ID 17, or an empty first or
+    // English one. A face whose ID 17 says W6 isn't Regular because its ID 2 says so.
     let typographic = font.localized_strings(StringId::TYPOGRAPHIC_SUBFAMILY_NAME);
     let first_empty = typographic.clone().next().is_none_or(|s| s.chars().next().is_none());
     let english_empty = typographic.english_or_first().is_some_and(|s| s.chars().next().is_none());
