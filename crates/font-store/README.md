@@ -22,11 +22,12 @@ A source the user adds is an index file at an https URL (`.json` or `.json.gz`).
 - the sha256 of the file first fetched is kept, and a different file later shows as `FontSource::changed`;
 - only an app's own interface can add one (`add_user_source`); an agent gets `Error::NotAllowed`.
 
-A source the build's host gives is for a build that has no font store folder of its own, a web build in a browser tab or a headless engine on a server, whose host page or service has the fonts its users' documents need ([RFC-0034](https://github.com/storytold/craft-libs/issues/2331)). `Index::from_host_bytes(bytes, id)` reads it (JSON or gzipped JSON) by exactly the rules a user's source is read by, but:
+A source the build's host gives is for a build that has no font store folder of its own, a web build in a browser tab or a headless engine on a server, whose host page or service has the fonts its users' documents need ([RFC-0034](https://github.com/storytold/craft-libs/issues/2331)). `Index::from_host_bytes(bytes, id)` reads it (JSON or gzipped JSON) by the rules a user's source is read by, with one exception, and:
 
 - `id` is the host's own name for the index: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `.`; anything else is `IndexError::Invalid`;
 - its source ID is `host:<id>`, never the ID its file declares, so it can't stand in for a built-in or a `user:` source;
 - it is never curated, whatever its file says;
+- a file whose path ends in `.ttc` or `.otc` is left out with a warning, and a family with no other file with it, since `verify_face` refuses every collection (the check is of the path: a collection named `.ttf` is refused when it is fetched); a user's source keeps them;
 - an index with an `http` URL template, an unsafe path, a bad sha256 or any other entry the rules refuse is refused whole and adds nothing (a family under a licence that doesn't allow redistribution is not an error: it is left out with a warning, as in a user's source). A list of indexes is all or nothing as RFC-0034 §1.3 says: the build refuses the whole list when one is refused, so the caller reads each with `from_host_bytes` and stops at the first error.
 
 An index may list a single file, so a host that hands over one face at a time needs no catalogue. The build lists the families at once and fetches a face only when type in a document uses it, from the URLs `index.file_urls(family, file)` gives, then checks it with `verify_face` (see Verifying a fetched file). Each host index needs an `id` of its own, since the ID is the source's; two indexes given the same one are one source: `Index::merge` keeps the first and records a `SourceProblem` for the second. `Index::merge` keeps same-named families of different sources apart (a family of the same name in a built-in source and a host's index are two families): look one up by source with `family_from`, or take them all with `families_named` and `Family::face` (or `Index::find_face`, which takes the first source that has the style) on the family you mean, rather than assuming one family per name.
@@ -112,7 +113,7 @@ When every file has passed, the store takes `.lock`, moves the files into the fa
 
 | Attribute | The file passes when |
 |---|---|
-| File | it is not a collection: an entry can't name a face of one, so a collection is refused (`VerifyError::Collection`), and a host's index that lists a `.ttc` or `.otc` file is refused whole. |
+| File | it is not a collection: an entry can't name a face of one, so a collection is refused (`VerifyError::Collection`), and a host's index leaves out a `.ttc` or `.otc` file. |
 | Family | the entry's family, squashed (case, spaces and punctuation ignored), equals the squashed text of any non-empty name ID 16 or ID 1 record (a family with no letters or digits must match exactly) (`VerifyError::Family`). |
 | Axes | it is variable exactly when the entry lists axes, each range at least the entry's (`VerifyError::Axis`, `VerifyError::Style`). |
 | PostScript | when the entry lists any names, the font's ID 6 is one of them, exactly (`VerifyError::PostScript`); the PostScript name is then the style's identity (generators, `craft-font-index` among them, write the font's own ID 6 as the `postscript` name), and weight, width and italic are not compared. |

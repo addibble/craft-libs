@@ -43,7 +43,7 @@ pub enum VerifyError {
     Style {
         /// What the entry claims, of the attributes that differ: `weight 700, width 100%`.
         expected: String,
-        /// What the file is.
+        /// What the file is, of the same attributes.
         found: String,
     },
     /// The file has no variation axis the entry claims, or not its whole range.
@@ -153,7 +153,8 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 /// [`verify_font`] for one font, then that the font really is what `family`'s index entry says,
 /// whatever the index's author made of it. The host supplies the index and the sha256 together,
 /// so this catches an index that describes the wrong file by its family, axes or style names,
-/// and, with no PostScript names listed, by its weight, width or italic flag. It is not a security
+/// and, with PostScript names listed, by its PostScript name, and with none listed, by its weight,
+/// width or italic flag. It is not a security
 /// boundary.
 ///
 /// The bytes must be the entry's size and sha256 and one font with a `name` table and outlines
@@ -287,7 +288,11 @@ fn check_style(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
     if !covers("ital") && !italics.contains(&file.is_italic()) {
         let word = |i: bool| if i { "italic" } else { "upright" };
         expected.push(word(file.is_italic()).to_string());
-        found.push(join(italics.iter().map(|&i| word(i).to_string()).collect()));
+        found.push({
+            let mut words: Vec<String> = italics.iter().map(|&i| word(i).to_string()).collect();
+            words.dedup();
+            join(words)
+        });
     }
     if !expected.is_empty() {
         return Err(VerifyError::Style { expected: expected.join(", "), found: found.join(", ") });

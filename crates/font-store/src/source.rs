@@ -372,6 +372,19 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
             warnings.push(format!("{} is left out: its licence `{}` needs a license_file", short(&fam.family), short(&fam.license)));
             continue;
         }
+        // `verify_face` refuses every collection, so one listed in a host's index can only fail
+        // later: it is left out, by its extension (a collection named `.ttf` is refused when fetched).
+        if ctx.host {
+            let before = fam.files.len();
+            fam.files.retain(|f| ![".ttc", ".otc"].iter().any(|ext| f.path.to_ascii_lowercase().ends_with(ext)));
+            if fam.files.len() < before {
+                let left = if fam.files.is_empty() { "is left out: it lists only font collections" } else { "has its font collections left out" };
+                warnings.push(format!("{} {left}, which a host's index can't list", short(&fam.family)));
+                if fam.files.is_empty() {
+                    continue;
+                }
+            }
+        }
         check_family(&mut fam, &ctx)?;
         total = total.saturating_add(fam.files.len());
         if total > MAX_FILES {
@@ -462,9 +475,6 @@ fn check_family(fam: &mut Family, ctx: &Ctx<'_>) -> Result<(), IndexError> {
         let file = check_path(&f.path)?.to_ascii_lowercase();
         if ![".ttf", ".otf", ".ttc", ".otc"].iter().any(|ext| file.ends_with(ext)) {
             return invalid(format!("`{}` is not a font file", short(&f.path)));
-        }
-        if ctx.host && [".ttc", ".otc"].iter().any(|ext| file.ends_with(ext)) {
-            return invalid(format!("`{}` is a font collection, which a host's index can't list", short(&f.path)));
         }
         if !names.insert(file) {
             return invalid(format!("`{}` is listed twice", short(&f.path)));

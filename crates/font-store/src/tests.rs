@@ -769,7 +769,13 @@ fn a_host_index_is_never_curated_and_cant_shadow_another_source() {
     std::io::Write::write_all(&mut gz, v.to_string().as_bytes()).unwrap();
     let zipped = Index::from_host_bytes(&gz.finish().unwrap(), "page.1").unwrap();
     assert_eq!(zipped.sources()[0].id, "host:page.1");
-    // A host's index that declares a built-in source's ID, or a user's, is still its own source.
+    // A host's index that declares a built-in source's ID, or one that looks like a user's, is still its own source.
+    let mut user_like = v.clone();
+    user_like["source"] = json!("user-fonts.host.example/index");
+    user_like["source_info"]["id"] = json!("user-fonts.host.example/index");
+    let user_like = Index::from_host_bytes(user_like.to_string().as_bytes(), "page.1").unwrap();
+    assert_eq!(user_like.sources()[0].id, "host:page.1");
+    assert_eq!(user_like.sources()[0].user_url, None);
     let mut google = v.clone();
     google["source"] = json!(GOOGLE_FONTS);
     google["source_info"]["id"] = json!(GOOGLE_FONTS);
@@ -858,25 +864,34 @@ fn a_host_index_is_refused_whole_by_the_rules_of_a_users() {
         assert!(matches!(Index::from_host_bytes(&ok, id), Err(IndexError::Invalid(_))), "{id:?}");
     }
     assert!(Index::from_host_bytes(&ok, &"x".repeat(64)).is_ok());
-    // Adding nothing: a refused index leaves what merges alone.
-    let before = Index::merge([index_of(&fixture().index).unwrap()]);
-    let merged = Index::merge([before.clone(), Index::from_host_bytes(&refused[0], "page").unwrap_or_default()]);
-    assert_eq!(merged.sources().len(), 1);
-    assert_eq!(merged.families().len(), before.families().len());
 }
 
-// Invariant: a host's index can't list a collection, since `verify_face` refuses every one (breaks
-// if: the host check is dropped from `check_family`). A user's or built-in index may.
+// Invariant: a host's index leaves out a collection file, and a family with no other file, with a
+// warning, since `verify_face` refuses every collection; the rest of the index loads, and a
+// user's index keeps the collection (breaks if: the host check is dropped, or refuses the index).
 #[test]
-fn a_host_index_cant_list_a_collection() {
+fn a_host_index_leaves_out_collections_with_a_warning() {
+    let user = |bytes: &[u8]| Index::from_user_bytes(bytes, "https://fonts.host.example/index.json").unwrap();
     for path in ["ofl/testsans/TestSans-Bold.ttc", "ofl/testsans/TestSans-Bold.OTC"] {
         let mut v = host_index();
+        let kept = v["families"][0]["files"].as_array().unwrap().len();
         v["families"][0]["files"][1]["path"] = json!(path);
         let bytes = v.to_string().into_bytes();
-        let err = Index::from_host_bytes(&bytes, "page").unwrap_err();
-        assert!(matches!(err, IndexError::Invalid(_)) && err.to_string().contains("collection"), "{err}");
-        assert!(Index::from_user_bytes(&bytes, "https://fonts.host.example/index.json").is_ok(), "{path}");
+        let index = Index::from_host_bytes(&bytes, "page").unwrap();
+        assert_eq!(index.family("Test Sans").unwrap().files.len(), kept - 1, "{path}");
+        assert!(index.family("Test Var").is_some());
+        let warnings = &index.sources()[0].warnings;
+        assert!(warnings.len() == 1 && warnings[0].contains("Test Sans") && warnings[0].contains("collection"), "{warnings:?}");
+        assert_eq!(user(&bytes).family("Test Sans").unwrap().files.len(), kept, "{path}");
     }
+    // A family with only collections is left out whole.
+    let mut v = host_index();
+    v["families"][1]["files"][0]["path"] = json!("ofl/testvar/TestVar[wght].ttc");
+    let bytes = v.to_string().into_bytes();
+    let index = Index::from_host_bytes(&bytes, "page").unwrap();
+    assert!(index.family("Test Var").is_none() && index.family("Test Sans").is_some());
+    assert!(index.sources()[0].warnings.iter().any(|w| w.contains("Test Var") && w.contains("collection")));
+    assert!(user(&bytes).family("Test Var").is_some());
 }
 
 /// The Test Sans family of [`host_index`] and its `style` file's entry, made to describe `bytes`
@@ -1037,6 +1052,9 @@ fn a_style_error_names_only_what_was_compared_and_failed() {
         panic!("not a style")
     };
     assert_eq!((expected.as_str(), found.as_str()), ("weight 700, width 100%", "weight 400, width 75%"));
+    // An italic entry for an upright file: the readings agree, so each is said once.
+    let Err(VerifyError::Style { expected, found }) = check(spec(), &|f| f.style = "italic".into()) else { panic!("not a style") };
+    assert_eq!((expected.as_str(), found.as_str()), ("italic", "upright"));
 }
 
 // Invariant: every style name an entry lists is one the face gives, with or without PostScript
