@@ -1031,8 +1031,10 @@ fn a_named_instances_name_is_one_its_entry_may_list() {
                 file.postscript.clear();
             }
             assert_eq!(verify_face(&family, &file, &bytes), Ok(()), "{count} instances, postscript {postscript}");
+            // A listed name swapped for one the font doesn't give: the list stays within 256, so
+            // the name check is what refuses it.
             let mut stray = file.clone();
-            stray.names.push("Not An Instance".into());
+            stray.names[0] = "Not An Instance".into();
             assert_eq!(verify_face(&family, &stray, &bytes), Err(VerifyError::Names { found: "Not An Instance".into() }), "{count}");
         }
     }
@@ -1046,16 +1048,24 @@ fn a_named_instances_name_is_one_its_entry_may_list() {
     assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: "Instance 256".into() }));
     // A file's names come only from its own style name and the first 256 named instances, and this
     // documents that rule: generators must stop at 256 instances. Here 258 instances repeat
-    // "Instance 0", so a generator that read every instance and dropped the repeat would list 256
-    // distinct names, the last of them the 257th instance's, which the file doesn't give.
+    // "Instance 0" and "Instance 2", so a generator that read every instance and dropped the
+    // repeats would list "Regular" and 254 distinct names of the first 256 instances, then the
+    // 257th instance's "Instance 256" as the 256th name: one the file doesn't give.
     let mut texts: Vec<String> = (0..258).map(|i| format!("Instance {i}")).collect();
     texts[1] = "Instance 0".into();
+    texts[3] = "Instance 2".into();
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     let bytes = font_as(&Spec { axes, instances: &refs, ..Spec::default() });
     let (family, mut file) = entry_for(&index, "Regular", &bytes);
     file.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }];
-    file.names = std::iter::once("Instance 0".to_string()).chain((2..=256).map(|i| format!("Instance {i}"))).collect();
-    assert_eq!(file.names.len(), 256);
+    let mut every: Vec<String> = vec!["Regular".into()];
+    for t in &texts {
+        if !every.contains(t) && every.len() < 256 {
+            every.push(t.clone());
+        }
+    }
+    assert_eq!((every.len(), every.last().unwrap().as_str()), (256, "Instance 256"));
+    file.names = every;
     assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: "Instance 256".into() }));
     // The first 256 instances' names, every one of them, are fine.
     file.names.pop();
@@ -1064,7 +1074,7 @@ fn a_named_instances_name_is_one_its_entry_may_list() {
     // reader never produces one.
     file.names = (0..=256).map(|i| format!("Instance {}", if i % 2 == 0 { 0 } else { 2 })).collect();
     assert_eq!(file.names.len(), 257);
-    assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::Names { found: file.names[256].clone() }));
+    assert_eq!(verify_face(&family, &file, &bytes), Err(VerifyError::TooManyNames { count: 257 }));
 }
 
 // Invariant: a file is variable exactly when its entry lists axes, with at least each axis's

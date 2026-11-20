@@ -65,6 +65,12 @@ pub enum VerifyError {
     /// The file is a collection, which `verify_face` doesn't check and so refuses.
     #[error("the file is a font collection, which verify_face doesn't check")]
     Collection,
+    /// The entry lists more style names than the format keeps (256), whatever the file gives.
+    #[error("the entry lists {count} style names, more than the 256 the format keeps")]
+    TooManyNames {
+        /// How many it lists.
+        count: usize,
+    },
     /// The entry lists a style name that the file doesn't give: every name it lists must be the
     /// font's own style name or one of its named instances'.
     #[error("the entry lists the style {found}, which the file doesn't give")]
@@ -168,16 +174,18 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 ///    width with a `wdth` axis, the italic flag with an `ital` axis;
 /// 4. when the entry lists style `names` (format 1.3), every one of them is one of the font's
 ///    own style names, exactly: any record of its typographic subfamily (ID 17), of any platform
-///    or language; any record of its subfamily (ID 2) when it has no ID 17 or its first or
-///    English ID 17 record is empty; or a record of a named instance's subfamily name
-///    ([`VerifyError::Names`]). This is checked after 3, whether or not PostScript names are
+///    or language; any record of its subfamily (ID 2) when it has no ID 17 or its first record or
+///    its `english_or_first` record (skrifa's: the first en-US record, else an en one, else one
+///    with no language, else the first) is empty; or a record of a named instance's subfamily
+///    name ([`VerifyError::Names`]; an entry listing more than 256 names is
+///    [`VerifyError::TooManyNames`]). This is checked after 3, whether or not PostScript names are
 ///    listed.
 ///
 /// The work is bounded: one sha256 pass, one table directory, and for each of the name IDs 16, 1,
 /// 6 and 2, for ID 17 (scanned up to three times) and for each of the first 256 named instances'
 /// subfamily name IDs, at most 65,535 record headers scanned, at most 64 records decoded and at
 /// most 1,025 characters of each; only names of at most 1,024 characters are compared, a name past
-/// the first 64 records of its ID is not seen, a file's names come only from its own style name and
+/// the first 64 non-empty records of its ID is not seen, a file's names come only from its own style name and
 /// the first 256 named instances, and an entry listing more than 256 names is refused.
 pub fn verify_face(family: &Family, file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
     check_bytes(file, bytes)?;
@@ -290,10 +298,11 @@ fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
     if file.names.is_empty() {
         return Ok(());
     }
-    // The format keeps at most `MAX_NAMES` names of a file; an entry listing more is not one an
-    // index reader produces.
-    if let Some(extra) = file.names.get(MAX_NAMES) {
-        return Err(VerifyError::Names { found: extra.clone() });
+    // The format keeps at most `MAX_NAMES` names of a file, and an index reader never produces
+    // more. This bounds the names held and compared for a hand-built `FontFile`, and the work
+    // bound in `verify_face`'s doc depends on it.
+    if file.names.len() > MAX_NAMES {
+        return Err(VerifyError::TooManyNames { count: file.names.len() });
     }
     // Every record of the typographic subfamily (ID 17), whatever platform and language: an
     // index's builder may pick any (the first record, or Windows English first). The subfamily
