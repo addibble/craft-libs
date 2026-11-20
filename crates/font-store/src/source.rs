@@ -277,8 +277,6 @@ struct Ctx<'a> {
     slug: &'a str,
     google: bool,
     curated: bool,
-    /// Whether a build's host gave the index.
-    host: bool,
     templates: &'a [String],
     repo: Option<&'a str>,
     git_ref: Option<&'a str>,
@@ -357,13 +355,13 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
         check_str("script", &s.id)?;
     }
     let slug = if outside.is_some() { user_slug(&id) } else { slug(&id) };
+    let host = matches!(origin, Origin::Host { .. });
     let ctx = Ctx {
         declared: &declared,
         id: &id,
         slug: &slug,
         google: outside.is_none() && declared == GOOGLE_FONTS,
         curated,
-        host: matches!(origin, Origin::Host { .. }),
         templates: &templates,
         repo: raw.repo.as_deref(),
         git_ref: raw.git_ref.as_deref(),
@@ -399,7 +397,7 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
         // `verify_face` refuses every collection, so one listed in a host's index can only fail
         // later: it is left out, by its extension, once the rules above have held the whole
         // family (a collection named `.ttf` is refused when it is fetched).
-        if ctx.host {
+        if host {
             let is_collection = |path: &str| {
                 let tail = path.len().checked_sub(4).and_then(|i| path.as_bytes().get(i..));
                 tail.is_some_and(|t| t.eq_ignore_ascii_case(b".ttc") || t.eq_ignore_ascii_case(b".otc"))
@@ -415,7 +413,11 @@ fn check(raw: Raw, origin: Origin<'_>) -> Result<Index, IndexError> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 fam.files.retain(|f| !is_collection(&f.path));
-                let what = if fam.files.is_empty() { "is left out" } else { "has files left out" };
+                let what = match (fam.files.is_empty(), count) {
+                    (true, _) => "is left out",
+                    (false, 1) => "has a file left out",
+                    (false, _) => "has files left out",
+                };
                 let more = if count > 3 { format!(" and {} more", count - 3) } else { String::new() };
                 warnings.push(format!("{} {what}: a host's index can't list font collections ({shown}{more})", short(&fam.family)));
                 if fam.files.is_empty() {

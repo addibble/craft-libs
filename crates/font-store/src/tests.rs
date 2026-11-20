@@ -38,7 +38,7 @@ struct Spec<'a> {
     more_names: &'a [(u16, u16, u16, &'a str)],
     /// The subfamily names of the `fvar` table's named instances (with `axes`), one instance each.
     instances: &'a [&'a str],
-    /// Every instance names its subfamily with the first of `instances`' name ID (300).
+    /// Every instance names its subfamily with name ID 300; only the first of `instances` is written.
     shared_instance_name: bool,
 }
 
@@ -891,7 +891,7 @@ fn a_host_index_is_refused_whole_by_the_rules_of_a_users() {
     assert!(Index::from_host_bytes(&ok, &"x".repeat(64)).is_ok());
 }
 
-/// Lowers the limit on a index's files for this thread until dropped, even if the test panics.
+/// Sets the limit on an index's files for this thread until dropped (then back to `MAX_FILES`), even if the test panics.
 struct FileLimit;
 
 impl FileLimit {
@@ -923,11 +923,17 @@ fn a_host_index_leaves_out_collections_with_a_warning() {
         assert!(index.family("Test Var").is_some());
         let warnings = &index.sources()[0].warnings;
         assert!(
-            warnings.len() == 1 && warnings[0].starts_with("Test Sans has files left out:") && warnings[0].contains("collection"),
+            warnings.len() == 1 && warnings[0].starts_with("Test Sans has a file left out:") && warnings[0].contains("collection"),
             "{warnings:?}"
         );
         assert_eq!(user(&bytes).family("Test Sans").unwrap().files.len(), kept, "{path}");
     }
+    // Two collections of three files: the warning says files.
+    let mut v = host_index();
+    v["families"][0]["files"][1]["path"] = json!("ofl/testsans/A.ttc");
+    v["families"][0]["files"][2]["path"] = json!("ofl/testsans/B.ttc");
+    let index = Index::from_host_bytes(v.to_string().as_bytes(), "page").unwrap();
+    assert!(index.sources()[0].warnings[0].starts_with("Test Sans has files left out:"), "{:?}", index.sources()[0].warnings);
     // A family with only collections is left out whole.
     let mut v = host_index();
     v["families"][1]["files"][0]["path"] = json!("ofl/testvar/TestVar[wght].ttc");
@@ -1001,6 +1007,9 @@ fn a_collection_is_refused_by_verify_face() {
     let (_, mut other) = entry_for(&index, "Bold", &bytes);
     other.size += 1;
     assert!(matches!(verify_face(&family, &other, &bytes), Err(VerifyError::Size { .. })));
+    let (_, mut wrong) = entry_for(&index, "Bold", &bytes);
+    wrong.sha256 = "0".repeat(64);
+    assert_eq!(verify_face(&family, &wrong, &bytes), Err(VerifyError::Sha256));
 }
 
 // Invariant: a file with the index's sha256 is still refused when it is not the family or the
@@ -1223,7 +1232,7 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
 }
 
 // Invariant: instances that share one subfamily name ID still give that name, and only that one
-// (breaks if: a shared ID's names are lost, or an ID the font doesn't have is read). This tests the
+// (breaks if: a shared ID's names are lost). This tests the
 // result only: the crate has no way to count how many times a name ID is scanned.
 #[test]
 fn instances_sharing_a_name_id_give_its_names() {
