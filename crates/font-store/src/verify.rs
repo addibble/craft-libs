@@ -182,8 +182,8 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 ///    listed.
 ///
 /// The work is bounded: one sha256 pass, one table directory, and for each of the name IDs 16, 1,
-/// 6 and 2, for ID 17 (scanned up to three times) and for each of the first 256 named instances'
-/// subfamily name IDs, at most 65,535 record headers scanned, at most 64 non-empty records kept
+/// 6 and 2, for ID 17 (scanned up to three times) and for each distinct subfamily name ID of the first 256
+/// named instances, at most 65,535 record headers scanned, at most 64 non-empty records kept
 /// and at most 1,025 characters of each decoded; only names of at most 1,024 characters are compared, a name past
 /// the first 64 non-empty records of its ID is not seen, a file's names come only from its own style name and
 /// the first 256 named instances, and an entry listing more than 256 names is refused.
@@ -318,7 +318,14 @@ fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
     // A file's names come only from its own style name and the first `MAX_NAMES` named instances:
     // the format's rule, which a generator must follow (it stops at that many instances, whatever
     // names they repeat), so a name of a later instance is refused.
-    let instances = font.named_instances().iter().take(MAX_NAMES).flat_map(|i| names(font, i.subfamily_name_id().to_u16()));
+    // Instances often share a name ID, so each distinct ID is read once.
+    let mut ids: Vec<u16> = Vec::new();
+    for id in font.named_instances().iter().take(MAX_NAMES).map(|i| i.subfamily_name_id().to_u16()) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let instances = ids.into_iter().flat_map(|id| names(font, id));
     let mut have = names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME.to_u16()).into_iter().chain(subfamily).chain(instances);
     // Every listed name, not one of them: a name the face doesn't give would find it by a style it
     // isn't. The names still unmatched are all that is held: a name matched is dropped, and the
