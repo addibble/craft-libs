@@ -157,11 +157,6 @@ fn names(font: &FontRef<'_>, id: StringId) -> Vec<String> {
     font.localized_strings(id).take(MAX_NAME_RECORDS).map(|s| s.to_string()).filter(|s| !s.is_empty()).collect()
 }
 
-/// The first record of name `id`, when it isn't empty.
-fn first_name(font: &FontRef<'_>, id: StringId) -> Option<String> {
-    font.localized_strings(id).next().map(|s| s.to_string()).filter(|s| !s.is_empty())
-}
-
 /// `usWidthClass` (1 to 9) as a percentage of normal.
 fn width_percent(class: u16) -> f32 {
     const PERCENT: [f32; 9] = [50.0, 62.5, 75.0, 87.5, 100.0, 112.5, 125.0, 150.0, 200.0];
@@ -211,11 +206,15 @@ fn check_face(family: &Family, file: &FontFile, font: &FontRef<'_>) -> Result<()
     }
 
     if !file.names.is_empty() {
-        // As craft-font-index's generator lists them: the typographic subfamily (ID 17) when its
-        // first record isn't empty, else the subfamily (ID 2), then each named instance's.
-        let own = first_name(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME).or_else(|| first_name(font, StringId::SUBFAMILY_NAME));
-        let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).filter_map(|i| first_name(font, i.subfamily_name_id()));
-        let have: Vec<String> = own.into_iter().chain(instances).collect();
+        // Every record of its style names, whatever platform and language: an index's builder may
+        // pick any of them (the first record, or Windows English first), so each is the face's.
+        let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).flat_map(|i| names(font, i.subfamily_name_id()));
+        let have: Vec<String> = names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME)
+            .into_iter()
+            .chain(names(font, StringId::SUBFAMILY_NAME))
+            .chain(instances)
+            .take(MAX_NAME_RECORDS * 8)
+            .collect();
         // Every listed name, not one of them: a name the face doesn't give would find it by a
         // style it isn't.
         if let Some(stray) = file.names.iter().find(|n| !have.contains(n)) {

@@ -25,8 +25,9 @@ struct Spec<'a> {
     typographic_style: Option<&'a str>,
     /// `fvar` axes: tag, min, default, max.
     axes: &'a [(&'a [u8; 4], f32, f32, f32)],
-    /// More name records, after the others of their ID: ID, Windows language ID, text.
-    more_names: &'a [(u16, u16, &'a str)],
+    /// More name records, after the others of their ID: platform (1 Mac Roman, 3 Windows Unicode),
+    /// ID, language ID, text.
+    more_names: &'a [(u16, u16, u16, &'a str)],
 }
 
 impl Default for Spec<'_> {
@@ -62,8 +63,11 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
         texts.push((17, t.to_string()));
     }
     let mut records: Vec<NameRecord> = texts.into_iter().map(|(id, text)| NameRecord::new(3, 1, 0x409, NameId::new(id), text.into())).collect();
-    records.extend(spec.more_names.iter().map(|&(id, lang, text)| NameRecord::new(3, 1, lang, NameId::new(id), text.to_string().into())));
-    records.sort_by_key(|r| r.name_id);
+    records.extend(spec.more_names.iter().map(|&(platform, id, lang, text)| {
+        let encoding = if platform == 1 { 0 } else { 1 };
+        NameRecord::new(platform, encoding, lang, NameId::new(id), text.to_string().into())
+    }));
+    records.sort_by_key(|r| (r.platform_id, r.encoding_id, r.language_id, r.name_id));
     let mut builder = FontBuilder::new();
     builder.add_table(&Name::new(records)).unwrap();
     let fs_selection = if spec.italic { SelectionFlags::ITALIC } else { SelectionFlags::REGULAR };
@@ -884,22 +888,36 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
     );
     let (family, file) = regular_entry(&["Regular"]);
     assert_eq!(verify_face(&family, &file, &regular), Ok(()));
-    // The typographic subfamily (ID 17) wins over ID 2.
+    // The typographic subfamily (ID 17) and the subfamily (ID 2) are both the face's.
     let split = font_as(&Spec { style: "Bold", typographic_style: Some("Lumberboy"), ..bold });
     let (family, file) = entry(&split, &["Lumberboy"]);
     assert_eq!(verify_face(&family, &file, &split), Ok(()));
     let (family, file) = entry(&split, &["Bold"]);
-    assert_eq!(verify_face(&family, &file, &split), Err(VerifyError::Names { expected: vec!["Bold".into()], found: "Bold".into() }));
+    assert_eq!(verify_face(&family, &file, &split), Ok(()));
     // Another style name fails even with the entry's sha256, as a lookalike would.
     let (family, file) = entry(&plain, &["Lumberboy"]);
     assert!(matches!(verify_face(&family, &file, &plain), Err(VerifyError::Names { .. })));
-    // The face's style is read as the index's generator reads it: ID 17 only when its first record
-    // isn't empty, else ID 2, though a later ID 17 record has a name.
-    let blank_first = font_as(&Spec { more_names: &[(17, 0x409, ""), (17, 0x40C, "Lumberboy")], ..bold });
+    // Every record of ID 17 and ID 2 is the face's, whichever one an index's builder picked: ID 2
+    // when the first ID 17 record is empty, or a later ID 17 record.
+    let blank_first = font_as(&Spec { more_names: &[(3, 17, 0x409, ""), (3, 17, 0x40C, "Lumberboy")], ..bold });
     let (family, file) = entry(&blank_first, &["Bold"]);
     assert_eq!(verify_face(&family, &file, &blank_first), Ok(()));
     let (family, file) = entry(&blank_first, &["Lumberboy"]);
-    assert!(matches!(verify_face(&family, &file, &blank_first), Err(VerifyError::Names { .. })));
+    assert_eq!(verify_face(&family, &file, &blank_first), Ok(()));
+    // A legacy font whose Mac and Windows ID 2 differ ("Light" on the Mac record, which sorts
+    // first; "Regular" in Windows English, which a builder may prefer): either name is the face's.
+    let legacy = font_as(&Spec { more_names: &[(1, 2, 0, "Light")], ..Spec::default() });
+    let regular_entry = |names: &[&str]| {
+        let (family, mut file) = entry_for(&index, "Regular", &legacy);
+        file.names = names.iter().map(|n| n.to_string()).collect();
+        (family, file)
+    };
+    for listed in [&["Regular"][..], &["Light"], &["Regular", "Light"]] {
+        let (family, file) = regular_entry(listed);
+        assert_eq!(verify_face(&family, &file, &legacy), Ok(()), "{listed:?}");
+    }
+    let (family, file) = regular_entry(&["Regular", "Bold"]);
+    assert!(matches!(verify_face(&family, &file, &legacy), Err(VerifyError::Names { .. })), "a name no record gives");
     // An entry that gives no names is not held to any.
     let (family, file) = entry(&plain, &[]);
     assert_eq!(verify_face(&family, &file, &plain), Ok(()));

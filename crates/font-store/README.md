@@ -105,7 +105,7 @@ When every file has passed, the store takes `.lock`, moves the files into the fa
 2. that some face of the file (any face of a collection) is the entry's family: its typographic family name (name ID 16), or its legacy family name (ID 1) when it has none, equal to `family.family` ignoring case, as the index compares family names (`VerifyError::Family`);
 3. that the face has the entry's style: the `OS/2` weight and width class and the italic or oblique flag equal the entry's `weight`, `width` and `style`, a file is variable exactly when the entry lists axes, and each axis has at least the range the entry gives (`VerifyError::Style`, `VerifyError::Axis`);
 4. when the entry lists PostScript names, that the face's (ID 6) is one of them, exactly (`VerifyError::PostScript`);
-5. when the entry lists style `names` (format 1.3), that every one of them is the face's own style name (the first record of name ID 17 when it isn't empty, else of ID 2, as craft-font-index's generator reads it) or a named instance's subfamily name, exactly (`VerifyError::Names`).
+5. when the entry lists style `names` (format 1.3), that every one of them is one of the face's own style names: any record of name ID 17 or ID 2, of any platform or language (a builder may take the first record or prefer Windows English), or of a named instance's subfamily name, exactly (`VerifyError::Names`).
 
 When no face passes, the error is the one the nearest face failed with; each says what it expected and what it found. An install that fails a check fails its source, and nothing in the file is used. The store's own installs check with `verify_font` only: their indexes are curated or added by the user, who has chosen to trust them.
 
