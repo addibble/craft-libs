@@ -64,7 +64,7 @@ pub enum VerifyError {
         found: String,
     },
     /// The file is a collection, which an entry can't name a face of.
-    #[error("the file is a font collection, and a host's index can't name one of its faces")]
+    #[error("the file is a font collection, and an index entry can't name one of its faces")]
     Collection,
     /// The entry lists more style names than the format keeps (256), whatever the file gives.
     #[error("the entry lists {count} style names, more than the 256 the format keeps")]
@@ -155,8 +155,7 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 /// whatever the index's author made of it. The host supplies the index and the sha256 together,
 /// so this catches an index that describes the wrong file by its family, axes or style names,
 /// and, with PostScript names listed, by its PostScript name, and with none listed, by its weight,
-/// width or italic flag. It is not a security
-/// boundary.
+/// width or italic flag. It is not a security boundary.
 ///
 /// The bytes must be the entry's size and sha256 and one font with a `name` table and outlines
 /// (a collection is not checked and is [`VerifyError::Collection`]). Then

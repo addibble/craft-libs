@@ -14,20 +14,22 @@ const MAX_LIST: usize = 4096;
 /// The most style names a file's entry keeps (craft-font-index format); the rest are dropped.
 pub(crate) const MAX_NAMES: usize = 256;
 const MAX_FAMILIES: usize = 50_000;
-const MAX_FILES: usize = 200_000;
+pub(crate) const MAX_FILES: usize = 200_000;
+const MAX_SEGMENT: usize = 64;
+const MAX_FILE_NAME: usize = 200;
+const MAX_TEMPLATES: usize = 8;
+
 // The limit a test has set for its own thread, so that it is reachable.
 #[cfg(test)]
 thread_local!(pub(crate) static TEST_MAX_FILES: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_FILES) });
 
+/// The most files an index lists; a test can lower the limit for its own thread.
 fn max_files() -> usize {
     #[cfg(test)]
     return TEST_MAX_FILES.get();
     #[cfg(not(test))]
     MAX_FILES
 }
-const MAX_SEGMENT: usize = 64;
-const MAX_FILE_NAME: usize = 200;
-const MAX_TEMPLATES: usize = 8;
 
 /// Where an index file comes from.
 #[derive(Clone, Copy, Debug)]

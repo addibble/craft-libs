@@ -884,6 +884,22 @@ fn a_host_index_is_refused_whole_by_the_rules_of_a_users() {
     assert!(Index::from_host_bytes(&ok, &"x".repeat(64)).is_ok());
 }
 
+/// Lowers the limit on a index's files for this thread until dropped, even if the test panics.
+struct FileLimit;
+
+impl FileLimit {
+    fn set(limit: usize) -> Self {
+        crate::source::TEST_MAX_FILES.set(limit);
+        FileLimit
+    }
+}
+
+impl Drop for FileLimit {
+    fn drop(&mut self) {
+        crate::source::TEST_MAX_FILES.set(crate::source::MAX_FILES);
+    }
+}
+
 // Invariant: a host's index leaves out a collection file, and a family with no other file, with a
 // warning, since `verify_face` refuses every collection; the rest of the index loads, and a
 // user's index keeps the collection (breaks if: the host check is dropped, or refuses the index).
@@ -933,15 +949,16 @@ fn a_host_index_leaves_out_collections_with_a_warning() {
     assert_eq!(warning.matches(".ttc").count(), 3, "{warning}");
     assert!(warning.contains("Many-0.ttc") && warning.contains("Many-2.ttc") && warning.ends_with(" and 1 more)"), "{warning}");
     // Every file counts toward the limit, collections too: the user's rule, exactly.
-    let limit = 12;
-    crate::source::TEST_MAX_FILES.set(limit);
-    let over = many(limit);
-    assert!(Index::from_host_bytes(&over, "page").is_err());
-    assert!(Index::from_user_bytes(&over, "https://fonts.host.example/index.json").is_err());
     let base: usize = host_index_read().families().iter().map(|f| f.files.len()).sum();
+    let limit = base + 8;
+    let _reset = FileLimit::set(limit);
+    let user = |bytes: &[u8]| Index::from_user_bytes(bytes, "https://fonts.host.example/index.json");
+    let over = many(limit - base + 1);
+    assert!(matches!(Index::from_host_bytes(&over, "page"), Err(IndexError::Invalid(m)) if m == "too many files"));
+    assert!(matches!(user(&over), Err(IndexError::Invalid(m)) if m == "too many files"));
     let at = many(limit - base);
     Index::from_host_bytes(&at, "page").unwrap();
-    assert!(Index::from_user_bytes(&at, "https://fonts.host.example/index.json").is_ok());
+    user(&at).unwrap();
 }
 
 /// The Test Sans family of [`host_index`] and its `style` file's entry, made to describe `bytes`
