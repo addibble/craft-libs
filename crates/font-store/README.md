@@ -27,9 +27,9 @@ A source the build's host gives is for a build that has no font store folder of 
 - `id` is the host's own name for the index: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `.`; anything else is `IndexError::Invalid`;
 - its source ID is `host:<id>`, never the ID its file declares, so it can't stand in for a built-in or a `user:` source;
 - it is never curated, whatever its file says;
-- an index with one bad entry, an `http` URL template or an unsafe path is refused whole and adds nothing; the host decides whether a list of indexes is all or nothing.
+- an index with an `http` URL template, an unsafe path, a bad sha256 or any other entry the rules refuse is refused whole and adds nothing (a family under a licence that doesn't allow redistribution is not an error: it is left out with a warning, as in a user's source). A list of indexes is all or nothing as RFC-0034 §1.3 says: the build refuses the whole list when one is refused, so the caller reads each with `from_host_bytes` and stops at the first error.
 
-An index may list a single file, so a host that hands over one face at a time needs no catalogue. The build lists the families at once and fetches a face only when type in a document uses it, from the URLs `index.file_urls(family, file)` gives, then checks it with `verify_face` (see Verifying a fetched file).
+An index may list a single file, so a host that hands over one face at a time needs no catalogue. The build lists the families at once and fetches a face only when type in a document uses it, from the URLs `index.file_urls(family, file)` gives, then checks it with `verify_face` (see Verifying a fetched file). Each host index needs an `id` of its own, since the ID is the source's; two indexes given the same one are one source: `Index::merge` keeps the first and records a `SourceProblem` for the second. `Index::merge` keeps same-named families of different sources apart (a family of the same name in a built-in source and a host's index are two families): look one up by source with `family_from`, or take them all with `families_named` and `Family::face` (or `Index::find_face`, which takes the first source that has the style) on the family you mean, rather than assuming one family per name.
 
 ## Network access
 
@@ -44,7 +44,7 @@ A file's URLs come from its source's URL templates, best first. Both built-in so
 
 ## The index
 
-`Index` holds the families of one or more sources. Families are sorted by name. Two sources can have a family of the same name (Google Fonts and Noto both have `Noto Serif Myanmar`, Noto's with more styles); lookups by name prefer the first source: the built-in ones in `sources.json` order, then the user's.
+`Index` holds the families of one or more sources. Families are sorted by name. Two sources can have a family of the same name (Google Fonts and Noto both have `Noto Serif Myanmar`, Noto's with more styles); lookups by name prefer the first source: the built-in ones in `sources.json` order, then the user's and the host's, in the order merged.
 
 | Call | What it does |
 |---|---|
@@ -77,7 +77,7 @@ Known gaps in matching a file's own style `names`:
 
 - A static file of another width whose only name is a weight's word (a wide face named `Bold`), beside a file of normal width listed by that word, yields that style to it: the wide face is listed by no style of its own, and its style fetches the face of normal width.
 - After a static file yields a style, `find_face` returns the weight lookup's pick, not necessarily the file whose listing justified the yield.
-- `verify_face` reads at most 4096 of a face's style name records, so a listed name past them is refused. Walking the records lazily is the follow-up.
+- `verify_face` compares a listed style name against at most 512 of a face's style name records (at most 64 per name ID and per named instance), so a listed name past them is refused.
 
 ## Installing
 
@@ -105,15 +105,26 @@ When every file has passed, the store takes `.lock`, moves the files into the fa
 
 ## Verifying a fetched file
 
-`verify_font(file, bytes)` checks a file against its entry: its size, its sha256, then that every face in it parses and has outlines. A file with the index's sha256 is the file the index lists, so it can only be the wrong font if the index itself is wrong. A host's index is not curated, so `verify_face(family, file, bytes)` checks what the entry says the file is, and takes the file's word for nothing:
+`verify_font(file, bytes)` checks a file against its entry: its size, its sha256, then that every face in it parses and has outlines. A file with the index's sha256 is the file the index lists, so it can only be the wrong font if the index itself is wrong.
 
-1. everything `verify_font` checks;
-2. that some face of the file (any face of a collection) is the entry's family: its typographic family name (name ID 16), or its legacy family name (ID 1) when it has none, equal to `family.family` ignoring case, as the index compares family names (`VerifyError::Family`);
-3. that the face has the entry's style: the `OS/2` weight and width class and the italic or oblique flag equal the entry's `weight`, `width` and `style`, a file is variable exactly when the entry lists axes, and each axis has at least the range the entry gives (`VerifyError::Style`, `VerifyError::Axis`);
-4. when the entry lists PostScript names, that the face's (ID 6) is one of them, exactly (`VerifyError::PostScript`);
-5. when the entry lists style `names` (format 1.3), that every one of them is one of the face's own style names: any record of its typographic subfamily (name ID 17), of any platform or language (a builder may take the first record or prefer Windows English); any record of its subfamily (ID 2) when it has no ID 17 or its first or English ID 17 record is empty; or a record of a named instance's subfamily name, exactly (`VerifyError::Names`).
+`verify_face(family, file, bytes)` is for a build that takes a host's index (RFC-0034 §3): it checks that the file is what the entry says. The host supplies the index and the sha256 together, so this catches an index that honestly describes the wrong file; it is not a security boundary. It passes exactly when the bytes are the entry's size and sha256 and one font with a `name` table and outlines, and:
 
-When no face passes, the error is the one the nearest face failed with; each says what it expected and what it found. An install that fails a check fails its source, and nothing in the file is used. The store's own installs check with `verify_font` only: their indexes are curated or added by the user, who has chosen to trust them.
+| Attribute | The file passes when |
+|---|---|
+| File | it is not a collection: `verify_face` doesn't check collections and refuses them (`VerifyError::Collection`). |
+| Family | the entry's family, squashed (case, spaces and punctuation ignored), equals the squashed text of any non-empty name ID 16 or ID 1 record (a family with no letters or digits must match exactly) (`VerifyError::Family`). |
+| Axes | it is variable exactly when the entry lists axes, each range at least the entry's (`VerifyError::Axis`, `VerifyError::Style`). |
+| PostScript | when the entry lists any names, the font's ID 6 is one of them, exactly (`VerifyError::PostScript`); the PostScript name is then the style's identity (generators, `craft-font-index` among them, write the font's own ID 6 as the `postscript` name), and weight, width and italic are not compared. |
+| Style names (format 1.3) | when the entry lists style `names`, every one of them is one of the font's own style names, exactly, whether or not PostScript names are listed: any record of its typographic subfamily (ID 17), of any platform or language (a builder may take the first record or prefer Windows English); any record of its subfamily (ID 2) when it has no ID 17 or its first or English ID 17 record is empty; or a record of a named instance's subfamily name (`VerifyError::Names`). The names compared are at most 512 records, read under the same bounds as the other IDs. |
+| Weight (no PostScript names) | skipped with a `wght` axis; otherwise the entry's weight is the `OS/2` weight class clamped to 1 to 1000, or 100 when the class is 250, or 200 when it is 275; with no `OS/2` table, 700 when `head`'s macStyle is bold, else 400. |
+| Width (no PostScript names) | skipped with a `wdth` axis; otherwise within 0.5 of the percentage of the width class (50, 62.5, 75, 87.5, 100, 112.5, 125, 150, 200 for 1 to 9; a class outside 1 to 9 is clamped, and 100 is also accepted for it); with no `OS/2` table, 100. |
+| Italic (no PostScript names) | skipped with an `ital` axis; otherwise the entry equals either reading of the raw fields: `fsSelection` bit 0 or bit 9 (oblique), or `fsSelection` bit 0 or `head`'s macStyle italic bit; with no `OS/2` table, the macStyle italic bit. |
+
+These are our own readings of the raw `OS/2` and `head` fields, not `skrifa`'s `font.attributes()`, because generators read those fields differently. The work is bounded: one sha256 pass, one table directory and one face; for each of the name IDs 16, 1 and 6 at most 65,535 record headers are scanned, at most 64 non-empty records kept and at most 1,025 characters of each decoded. A record longer than 1,024 characters is not a match (it is skipped, never cut short and compared).
+
+A file that names itself another family is refused even when its PostScript name is listed, because a build registers a face by the file's own names: accepting it would add the other family's face, never the entry's. A few google/fonts files do this.
+
+`Size`, `Family`, `Style` and `Axis` errors say what they expected and what they found. A file that fails a check is refused and nothing in it is used; the rest of its index is unaffected. The store's installs check with `verify_font` only: the store folder is native only and holds the fonts of built-in sources and those the user added, whom the user chose to trust. `FontStore::install_family` and `install_face` refuse a family of a host's index (`host:`) with `Error::HostFamily`, before anything is read or downloaded.
 
 ## The store folder
 

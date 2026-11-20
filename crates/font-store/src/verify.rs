@@ -1,12 +1,14 @@
 //! Checks a downloaded or installed file against its index entry.
 
 use sha2::{Digest, Sha256};
-use skrifa::raw::tables::os2::SelectionFlags;
-use skrifa::raw::{FileRef, TableProvider};
+
+use skrifa::raw::FileRef;
+use skrifa::raw::TableProvider;
 use skrifa::string::StringId;
 use skrifa::{FontRef, MetadataProvider};
 
-use crate::index::{Family, FontFile};
+use crate::index::{Family, FontFile, squash};
+use crate::source::MAX_STR;
 
 /// Tables of which a drawable face has at least one.
 const OUTLINE_TABLES: [&[u8; 4]; 4] = [b"glyf", b"CFF ", b"CFF2", b"VARC"];
@@ -28,7 +30,7 @@ pub enum VerifyError {
     /// It doesn't parse as a font with outlines.
     #[error("the file is not a font, or a damaged one")]
     NotAFont,
-    /// No face of the file is the family the entry belongs to.
+    /// The font doesn't name itself the family the entry belongs to.
     #[error("the file is the family {found}, not {expected}")]
     Family {
         /// The entry's family.
@@ -36,7 +38,7 @@ pub enum VerifyError {
         /// The file's, or `(none)`.
         found: String,
     },
-    /// No face of the file has the style the entry claims.
+    /// The font isn't the style the entry claims.
     #[error("the file is {found}, not {expected}")]
     Style {
         /// What the entry claims: `weight 700, upright, width 100%`.
@@ -54,14 +56,15 @@ pub enum VerifyError {
         /// The file's range, or `none`.
         found: String,
     },
-    /// The entry gives PostScript names and no face of the file has one of them.
-    #[error("the file's PostScript name is {found}, not one of {}", expected.join(", "))]
+    /// The entry gives PostScript names and the file's is not one of them.
+    #[error("the file's PostScript name is {found}, not one the entry lists")]
     PostScript {
-        /// The entry's PostScript names.
-        expected: Vec<String>,
         /// The file's, or `(none)`.
         found: String,
     },
+    /// The file is a collection, which `verify_face` doesn't check and so refuses.
+    #[error("the file is a font collection, which verify_face doesn't check")]
+    Collection,
     /// The entry gives a style name that no face of the file gives: every name it lists must be
     /// the face's own style name or one of its named instances'.
     #[error("the entry lists the style {found}, which the file doesn't give (it lists {})", expected.join(", "))]
@@ -78,9 +81,8 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Checks `bytes` against `file`: its size, then its sha256, then that every face in it parses
-/// and has outlines.
-pub fn verify_font(file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
+/// The size, then the sha256, of `bytes` against `file`.
+fn check_bytes(file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
     let actual = bytes.len() as u64;
     if actual != file.size {
         return Err(VerifyError::Size { expected: file.size, actual });
@@ -88,10 +90,22 @@ pub fn verify_font(file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
     if sha256_hex(bytes) != file.sha256 {
         return Err(VerifyError::Sha256);
     }
+    Ok(())
+}
+
+/// Checks `bytes` against `file`: its size, its sha256, then that every face in it parses
+/// and has outlines.
+pub fn verify_font(file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
+    check_bytes(file, bytes)?;
     if !is_font(bytes) {
         return Err(VerifyError::NotAFont);
     }
     Ok(())
+}
+
+/// Whether a face has a `name` table and outlines.
+fn is_drawable(font: &FontRef<'_>) -> bool {
+    font.table_data(skrifa::Tag::new(b"name")).is_some() && OUTLINE_TABLES.iter().any(|t| font.table_data(skrifa::Tag::new(t)).is_some())
 }
 
 /// Whether `bytes` is a font file or collection whose every face has a `name` table and outlines.
@@ -100,9 +114,7 @@ pub fn is_font(bytes: &[u8]) -> bool {
     let mut faces = 0usize;
     for font in file.fonts() {
         let Ok(font) = font else { return false };
-        let named = font.table_data(skrifa::Tag::new(b"name")).is_some();
-        let drawable = OUTLINE_TABLES.iter().any(|t| font.table_data(skrifa::Tag::new(t)).is_some());
-        if !named || !drawable {
+        if !is_drawable(&font) {
             return false;
         }
         faces += 1;
@@ -110,122 +122,189 @@ pub fn is_font(bytes: &[u8]) -> bool {
     faces > 0
 }
 
-/// [`verify_font`], then that `file` really is what `family`'s index entry says: some face of it
-/// (any face of a collection) is
-///
-/// 1. the entry's family: its typographic family name (name ID 16), or its legacy family name
-///    (ID 1) when it has none, equal to `family.family` ignoring case, as the index compares
-///    family names;
-/// 2. the entry's style: the `OS/2` weight class, width class and italic or oblique flag equal
-///    the entry's `weight`, `width` and `style` (a file whose entry has an `ital` axis is not
-///    held to the flag), and a file is variable exactly when the entry lists axes, each with at
-///    least the range the entry gives;
-/// 3. the entry's PostScript name (ID 6), when the entry lists any: one of them, exactly.
-///
-/// 4. the entry's style names, when the entry lists any: every one of them is one of the face's
-///    own style names, exactly: any record of its typographic subfamily (ID 17), of any platform
-///    or language; any record of its subfamily (ID 2) when it has no ID 17 or its first or English
-///    ID 17 record is empty; or a record of a named instance's subfamily name.
-///
-/// The error is the first check the best-matching face failed. A file of another family, style
-/// or PostScript name fails even when its bytes have the index's sha256, as they do if the index
-/// itself is wrong, so a document made with one font can't silently render with a lookalike.
-pub fn verify_face(family: &Family, file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
-    verify_font(file, bytes)?;
-    let Ok(parsed) = FileRef::new(bytes) else { return Err(VerifyError::NotAFont) };
-    let mut worst: Option<(u8, VerifyError)> = None;
-    for font in parsed.fonts() {
-        let Ok(font) = font else { return Err(VerifyError::NotAFont) };
-        match check_face(family, file, &font) {
-            Ok(()) => return Ok(()),
-            Err((stage, e)) => {
-                if worst.as_ref().is_none_or(|(s, _)| stage > *s) {
-                    worst = Some((stage, e));
-                }
-            }
-        }
-    }
-    Err(worst.map_or(VerifyError::NotAFont, |(_, e)| e))
-}
-
-/// Name records read per name ID; a hostile `name` table can repeat one tens of thousands of times.
-const MAX_NAME_RECORDS: usize = 512;
+/// Name records decoded per name ID. A `name` table holds at most 65,535 records (the format's
+/// limit, so scanning their headers is bounded) and a hostile one can repeat an ID in all of them.
+const MAX_NAME_RECORDS: usize = 64;
 /// How closely a width percentage must agree.
 const WIDTH_TOLERANCE: f32 = 0.5;
 /// How closely an axis range must agree.
 const AXIS_TOLERANCE: f32 = 0.01;
+/// The percentage of each `usWidthClass` from 1 to 9.
+const WIDTHS: [f32; 9] = [50.0, 62.5, 75.0, 87.5, 100.0, 112.5, 125.0, 150.0, 200.0];
 
-fn names(font: &FontRef<'_>, id: StringId) -> Vec<String> {
-    font.localized_strings(id).take(MAX_NAME_RECORDS).map(|s| s.to_string()).filter(|s| !s.is_empty()).collect()
+/// The records of name ID `id` that can be compared. The headers scanned are at most 65,535 (the
+/// format's limit). Each record is decoded to at most `MAX_STR + 1` characters, and only the
+/// first [`MAX_NAME_RECORDS`] that decode to something are kept, so records that decode to
+/// nothing don't use them up: at most 64 x 1,025 characters per ID. A record longer than
+/// `MAX_STR` characters is left out, never cut short (a cut name could match).
+fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
+    font.localized_strings(StringId::new(id))
+        .map(|s| s.chars().take(MAX_STR + 1).collect::<String>())
+        .filter(|s| !s.is_empty())
+        .take(MAX_NAME_RECORDS)
+        .filter(|s| s.chars().count() <= MAX_STR)
+        .collect()
 }
 
-/// `usWidthClass` (1 to 9) as a percentage of normal.
-fn width_percent(class: u16) -> f32 {
-    const PERCENT: [f32; 9] = [50.0, 62.5, 75.0, 87.5, 100.0, 112.5, 125.0, 150.0, 200.0];
-    usize::from(class).checked_sub(1).and_then(|i| PERCENT.get(i)).copied().unwrap_or(100.0)
-}
+/// [`verify_font`] for one font, then that the font really is what `family`'s index entry says,
+/// whatever the index's author made of it. The host supplies the index and the sha256 together,
+/// so this catches an index that honestly describes the wrong file; it is not a security
+/// boundary.
+///
+/// The bytes must be the entry's size and sha256 and one font with a `name` table and outlines
+/// (a collection is not checked and is [`VerifyError::Collection`]). Then
+///
+/// 1. the font names itself the entry's family: `family.family` equals, ignoring case, spaces,
+///    hyphens, underscores and other punctuation (`Saira Extra Condensed` is `Saira
+///    ExtraCondensed`), a non-empty typographic family name (name ID 16) or legacy family name
+///    (ID 1) of the font. A font that names itself another family fails even when its
+///    PostScript name is listed: a build registers a face by the font's own names;
+/// 2. its variation axes are the entry's: a font is variable exactly when the entry lists axes,
+///    each with at least the range the entry gives;
+/// 3. when the entry lists PostScript names, the font's (ID 6) is one of them, exactly, and
+///    nothing more is compared: the PostScript name is the style's identity. When it lists none,
+///    the entry's weight, width and italic flag each equal one of the readings of the font's
+///    raw `OS/2` and `head` fields that the index generators make (see the README). A comparison
+///    is skipped for what the entry says a variable font covers: weight with a `wght` axis,
+///    width with a `wdth` axis, the italic flag with an `ital` axis;
+/// 4. when the entry lists style `names` (format 1.3), every one of them is one of the font's
+///    own style names, exactly: any record of its typographic subfamily (ID 17), of any platform
+///    or language; any record of its subfamily (ID 2) when it has no ID 17 or its first or
+///    English ID 17 record is empty; or a record of a named instance's subfamily name
+///    ([`VerifyError::Names`]). This is checked after 3, whether or not PostScript names are
+///    listed.
+///
+/// The work is bounded: one sha256 pass, one table directory, and for each of the name IDs 16, 1
+/// and 6, at most 65,535 record headers scanned, at most 64 records decoded and at most 1,025
+/// characters of each; only names of at most 1,024 characters are compared.
+pub fn verify_face(family: &Family, file: &FontFile, bytes: &[u8]) -> Result<(), VerifyError> {
+    check_bytes(file, bytes)?;
+    if bytes.starts_with(b"ttcf") {
+        return Err(VerifyError::Collection);
+    }
+    let font = match FileRef::new(bytes) {
+        Ok(FileRef::Font(font)) if is_drawable(&font) => font,
+        _ => return Err(VerifyError::NotAFont),
+    };
 
-/// One face against the entry: the stage it failed at (a higher stage matched more) and why.
-fn check_face(family: &Family, file: &FontFile, font: &FontRef<'_>) -> Result<(), (u8, VerifyError)> {
-    let typographic = names(font, StringId::TYPOGRAPHIC_FAMILY_NAME);
-    let found = if typographic.is_empty() { names(font, StringId::FAMILY_NAME) } else { typographic };
-    let wanted = family.family.to_lowercase();
-    if !found.iter().any(|n| n.to_lowercase() == wanted) {
+    let found: Vec<String> = [16, 1].into_iter().flat_map(|id| names(&font, id)).collect();
+    let wanted = squash(&family.family);
+    // A name with nothing to compare (no letters or digits) must be equal as written.
+    let same = |n: &String| if wanted.is_empty() { *n == family.family } else { squash(n) == wanted };
+    if !found.iter().any(same) {
         let found = found.first().cloned().unwrap_or_else(|| "(none)".into());
-        return Err((0, VerifyError::Family { expected: family.family.clone(), found }));
+        return Err(VerifyError::Family { expected: family.family.clone(), found });
     }
 
-    let os2 = font.os2().ok();
-    let weight = os2.as_ref().map_or(400, |t| t.us_weight_class());
-    let width = os2.as_ref().map_or(100.0, |t| width_percent(t.us_width_class()));
-    let italic = os2.as_ref().is_some_and(|t| t.fs_selection().intersects(SelectionFlags::ITALIC | SelectionFlags::OBLIQUE));
     let axes = font.axes();
-    let ital_axis = file.axes.iter().any(|a| a.tag == "ital");
-    let describe = |weight: u16, width: f32, italic: bool| format!("weight {weight}, {}, width {width}%", if italic { "italic" } else { "upright" });
-    if weight != file.weight || (width - file.width).abs() > WIDTH_TOLERANCE || (!ital_axis && italic != file.is_italic()) {
-        let expected = describe(file.weight, file.width, file.is_italic());
-        return Err((1, VerifyError::Style { expected, found: describe(weight, width, italic) }));
-    }
     if axes.is_empty() != file.axes.is_empty() {
-        let found = if axes.is_empty() { "a static font" } else { "a variable font" };
-        let expected = if file.axes.is_empty() { "a static font" } else { "a variable font" };
-        return Err((1, VerifyError::Style { expected: expected.into(), found: found.into() }));
+        let describe = |variable: bool| if variable { "a variable font" } else { "a static font" };
+        return Err(VerifyError::Style { expected: describe(!file.axes.is_empty()).into(), found: describe(!axes.is_empty()).into() });
     }
     for want in &file.axes {
         let have = axes.iter().find(|a| a.tag().to_be_bytes() == want.tag.as_bytes());
         if !have.as_ref().is_some_and(|a| a.min_value() <= want.min + AXIS_TOLERANCE && a.max_value() >= want.max - AXIS_TOLERANCE) {
             let found = have.map_or_else(|| "none".to_string(), |a| format!("{}..{}", a.min_value(), a.max_value()));
-            return Err((1, VerifyError::Axis { tag: want.tag.clone(), expected: format!("{}..{}", want.min, want.max), found }));
+            return Err(VerifyError::Axis { tag: want.tag.clone(), expected: format!("{}..{}", want.min, want.max), found });
         }
     }
 
     if !file.postscript.is_empty() {
-        let have = names(font, StringId::POSTSCRIPT_NAME);
-        if !have.iter().any(|n| file.postscript.contains(n)) {
-            let found = have.first().cloned().unwrap_or_else(|| "(none)".into());
-            return Err((2, VerifyError::PostScript { expected: file.postscript.clone(), found }));
+        let have = names(&font, 6);
+        if !have.iter().any(|n| file.postscript.iter().any(|p| p == n)) {
+            return Err(VerifyError::PostScript { found: have.first().cloned().unwrap_or_else(|| "(none)".into()) });
         }
+    } else {
+        check_style(file, &font)?;
+    }
+    check_names(file, &font)
+}
+
+/// The weight, width and italic flag of the entry against the readings of the font's raw
+/// fields. Only for an entry with no PostScript names.
+fn check_style(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
+    let covers = |tag: &str| file.axes.iter().any(|a| a.tag == tag);
+    let os2 = font.os2().ok();
+    let mac_style = font.head().map(|h| h.mac_style().bits()).unwrap_or(0);
+    let (mac_bold, mac_italic) = (mac_style & 1 != 0, mac_style & 2 != 0);
+
+    // The weights the readings give: the class, or the CSS weight of a legacy class.
+    let weights: Vec<u16> = match &os2 {
+        Some(os2) => {
+            let class = os2.us_weight_class().clamp(1, 1000);
+            match class {
+                250 => vec![class, 100],
+                275 => vec![class, 200],
+                _ => vec![class],
+            }
+        }
+        None => vec![if mac_bold { 700 } else { 400 }],
+    };
+    // The widths: the class's percentage, and 100 for a class the table has no row for.
+    let widths: Vec<f32> = match &os2 {
+        Some(os2) => {
+            let class = os2.us_width_class();
+            let mut v = vec![WIDTHS[usize::from(class.clamp(1, 9)) - 1]];
+            if !(1..=9).contains(&class) {
+                v.push(100.0);
+            }
+            v
+        }
+        None => vec![100.0],
+    };
+    // The italic flags: with an `OS/2` table, `fsSelection` bit 0 (italic) or bit 9 (oblique),
+    // or bit 0 or `head`'s italic bit; without one, the italic bit.
+    let italics: Vec<bool> = match &os2 {
+        Some(os2) => {
+            let sel = os2.fs_selection().bits();
+            vec![sel & 1 != 0 || sel & (1 << 9) != 0, sel & 1 != 0 || mac_italic]
+        }
+        None => vec![mac_italic],
+    };
+
+    let describe = |weights: &[u16], widths: &[f32], italics: &[bool]| {
+        let join = |v: Vec<String>| v.join(" or ");
+        format!(
+            "weight {}, {}, width {}%",
+            join(weights.iter().map(u16::to_string).collect()),
+            join(italics.iter().map(|&i| if i { "italic" } else { "upright" }.to_string()).collect()),
+            join(widths.iter().map(f32::to_string).collect()),
+        )
+    };
+    let differs = (!covers("wght") && !weights.contains(&file.weight))
+        || (!covers("wdth") && !widths.iter().any(|w| (w - file.width).abs() <= WIDTH_TOLERANCE))
+        || (!covers("ital") && !italics.contains(&file.is_italic()));
+    if differs {
+        let expected = describe(&[file.weight], &[file.width], &[file.is_italic()]);
+        return Err(VerifyError::Style { expected, found: describe(&weights, &widths, &italics) });
     }
 
-    if !file.names.is_empty() {
-        // Every record of the typographic subfamily (ID 17), whatever platform and language: an
-        // index's builder may pick any (the first record, or Windows English first). The
-        // subfamily (ID 2) only where a builder falls back to it: no ID 17, or an empty first or
-        // English one. A face whose ID 17 says W6 isn't Regular because its ID 2 says so.
-        let typographic = font.localized_strings(StringId::TYPOGRAPHIC_SUBFAMILY_NAME);
-        let first_empty = typographic.clone().next().is_none_or(|s| s.to_string().is_empty());
-        let english_empty = typographic.english_or_first().is_some_and(|s| s.to_string().is_empty());
-        let subfamily = if first_empty || english_empty { names(font, StringId::SUBFAMILY_NAME) } else { vec![] };
-        let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).flat_map(|i| names(font, i.subfamily_name_id()));
-        // At most 4096 names, so a hostile font's records (MAX_NAME_RECORDS per ID and per
-        // instance) can't grow the list without bound.
-        let have: Vec<String> =
-            names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME).into_iter().chain(subfamily).chain(instances).take(MAX_NAME_RECORDS * 8).collect();
-        // Every listed name, not one of them: a name the face doesn't give would find it by a
-        // style it isn't.
-        if let Some(stray) = file.names.iter().find(|n| !have.contains(n)) {
-            return Err((3, VerifyError::Names { expected: file.names.clone(), found: stray.clone() }));
-        }
+    Ok(())
+}
+
+/// The entry's style names, when it lists any (format 1.3): every one of them is one of the font's
+/// own style names, exactly. Only for an entry that lists names.
+fn check_names(file: &FontFile, font: &FontRef<'_>) -> Result<(), VerifyError> {
+    if file.names.is_empty() {
+        return Ok(());
+    }
+    // Every record of the typographic subfamily (ID 17), whatever platform and language: an
+    // index's builder may pick any (the first record, or Windows English first). The subfamily
+    // (ID 2) only where a builder falls back to it: no ID 17, or an empty first or English one. A
+    // face whose ID 17 says W6 isn't Regular because its ID 2 says so.
+    let typographic = font.localized_strings(StringId::TYPOGRAPHIC_SUBFAMILY_NAME);
+    let first_empty = typographic.clone().next().is_none_or(|s| s.to_string().is_empty());
+    let english_empty = typographic.english_or_first().is_some_and(|s| s.to_string().is_empty());
+    let subfamily = if first_empty || english_empty { names(font, StringId::SUBFAMILY_NAME.to_u16()) } else { vec![] };
+    let instances = font.named_instances().iter().take(MAX_NAME_RECORDS).flat_map(|i| names(font, i.subfamily_name_id().to_u16()));
+    // At most `MAX_NAME_RECORDS * 8` names, so a hostile font's records (`MAX_NAME_RECORDS` per ID
+    // and per instance) can't grow the list without bound.
+    let have: Vec<String> =
+        names(font, StringId::TYPOGRAPHIC_SUBFAMILY_NAME.to_u16()).into_iter().chain(subfamily).chain(instances).take(MAX_NAME_RECORDS * 8).collect();
+    // Every listed name, not one of them: a name the face doesn't give would find it by a style it
+    // isn't.
+    if let Some(stray) = file.names.iter().find(|n| !have.contains(n)) {
+        return Err(VerifyError::Names { expected: file.names.clone(), found: stray.clone() });
     }
     Ok(())
 }

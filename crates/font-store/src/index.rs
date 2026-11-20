@@ -269,7 +269,8 @@ impl Family {
         &self.dir
     }
 
-    /// Whether the family's source is curated: a built-in source, not one the user added.
+    /// Whether the family's source is curated: a built-in source, not one the user added (`user:`)
+    /// or the build's host gave (`host:`).
     pub fn is_curated(&self) -> bool {
         self.curated
     }
@@ -389,7 +390,7 @@ fn weight_listing_spells(squashed: &str, weight: u16, italic: bool) -> bool {
 }
 
 /// Letters and digits only, lowercased: `Bold Italic`, `bold-italic` and `BoldItalic` are equal.
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
@@ -503,8 +504,8 @@ pub struct SourceProblem {
 pub(crate) type Part = (FontSource, Vec<Language>, Vec<Script>, Vec<Family>);
 
 /// The checked indexes of one or more sources. Families are sorted by name; families of the same
-/// name are in source order (built-in sources in `sources.json` order, then the user's), and
-/// lookups by name prefer the first.
+/// name are in source order (built-in sources in `sources.json` order, then the user's and the
+/// host's, in the order merged), and lookups by name prefer the first.
 #[derive(Clone, Debug, Default)]
 pub struct Index {
     sources: Vec<FontSource>,
@@ -548,8 +549,15 @@ impl Index {
     /// http template, an unsafe path or a bad sha256 is refused whole.
     pub fn from_host_bytes(bytes: &[u8], id: &str) -> Result<Self, IndexError> {
         check_host_id(id)?;
-        let json = if is_gzip(bytes) { gunzip(bytes, MAX_INDEX_BYTES)? } else { bytes.to_vec() };
-        parse(&json, Origin::Host { id })
+        // Plain JSON is read where it is: `parse` refuses one over `MAX_INDEX_BYTES` before reading it.
+        let unzipped;
+        let json = if is_gzip(bytes) {
+            unzipped = gunzip(bytes, MAX_INDEX_BYTES)?;
+            &unzipped
+        } else {
+            bytes
+        };
+        parse(json, Origin::Host { id })
     }
 
     /// The built-in sources compiled into this build ([`crate::PINNED_INDEX`]): `sources.json`

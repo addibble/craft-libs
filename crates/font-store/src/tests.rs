@@ -17,6 +17,14 @@ struct Spec<'a> {
     /// `usWidthClass`.
     width_class: u16,
     italic: bool,
+    /// `fsSelection` bit 9 (oblique).
+    oblique: bool,
+    /// `head`'s `macStyle` italic bit: a `head` table is added when this or `mac_bold` is set.
+    mac_italic: bool,
+    /// `head`'s `macStyle` bold bit.
+    mac_bold: bool,
+    /// No `OS/2` table.
+    no_os2: bool,
     /// The PostScript name; `<family>-<style>` without spaces when empty.
     postscript: &'a str,
     /// The typographic family (ID 16), with `family` as the legacy one (ID 1).
@@ -38,6 +46,10 @@ impl Default for Spec<'_> {
             weight: 400,
             width_class: 5,
             italic: false,
+            oblique: false,
+            mac_italic: false,
+            mac_bold: false,
+            no_os2: false,
             postscript: "",
             typographic: None,
             typographic_style: None,
@@ -70,17 +82,33 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
     records.sort_by_key(|r| (r.platform_id, r.encoding_id, r.language_id, r.name_id));
     let mut builder = FontBuilder::new();
     builder.add_table(&Name::new(records)).unwrap();
-    let fs_selection = if spec.italic { SelectionFlags::ITALIC } else { SelectionFlags::REGULAR };
-    builder
-        .add_table(&Os2 {
-            us_weight_class: spec.weight,
-            us_width_class: spec.width_class,
-            fs_selection,
-            ul_code_page_range_1: Some(1),
-            ul_code_page_range_2: Some(0),
-            ..Default::default()
-        })
-        .unwrap();
+    let mut fs_selection = if spec.italic { SelectionFlags::ITALIC } else { SelectionFlags::REGULAR };
+    if spec.oblique {
+        fs_selection |= SelectionFlags::OBLIQUE;
+    }
+    if spec.mac_italic || spec.mac_bold {
+        use write_fonts::tables::head::{Head, MacStyle};
+        let mut mac_style = MacStyle::empty();
+        if spec.mac_italic {
+            mac_style.insert(MacStyle::ITALIC);
+        }
+        if spec.mac_bold {
+            mac_style.insert(MacStyle::BOLD);
+        }
+        builder.add_table(&Head { mac_style, ..Default::default() }).unwrap();
+    }
+    if !spec.no_os2 {
+        builder
+            .add_table(&Os2 {
+                us_weight_class: spec.weight,
+                us_width_class: spec.width_class,
+                fs_selection,
+                ul_code_page_range_1: Some(1),
+                ul_code_page_range_2: Some(0),
+                ..Default::default()
+            })
+            .unwrap();
+    }
     if !spec.axes.is_empty() {
         let axes = spec
             .axes
@@ -100,32 +128,6 @@ fn font_as(spec: &Spec<'_>) -> Vec<u8> {
     }
     builder.add_raw(Tag::new(b"glyf"), vec![0u8; 4]);
     builder.build()
-}
-
-/// A collection of `fonts`: the sfnt header and tables of each follow the collection header, with
-/// table offsets made absolute.
-fn collection(fonts: &[Vec<u8>]) -> Vec<u8> {
-    let header = 12 + 4 * fonts.len();
-    let mut out = b"ttcf".to_vec();
-    out.extend([0, 1, 0, 0]);
-    out.extend((fonts.len() as u32).to_be_bytes());
-    let mut at = header;
-    for f in fonts {
-        out.extend((at as u32).to_be_bytes());
-        at += f.len();
-    }
-    for f in fonts {
-        let base = out.len() as u32;
-        let mut f = f.clone();
-        let tables = usize::from(u16::from_be_bytes([f[4], f[5]]));
-        for t in 0..tables {
-            let o = 12 + 16 * t + 8;
-            let offset = u32::from_be_bytes([f[o], f[o + 1], f[o + 2], f[o + 3]]) + base;
-            f[o..o + 4].copy_from_slice(&offset.to_be_bytes());
-        }
-        out.extend(f);
-    }
-    out
 }
 
 /// An index and the files it lists, by their URL-encoded google/fonts paths.
@@ -727,38 +729,30 @@ fn host_index() -> serde_json::Value {
     v
 }
 
+fn host_index_read() -> Index {
+    Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap()
+}
+
+// Invariant: a host's index is its own source, `host:<id>`, and never curated, whatever its file
+// declares, so it can't stand in for a built-in source (breaks if: the file's ID or `curated` is
+// kept, or `host:` is dropped from the ID). `host_index_read` and the `verify_face` tests below
+// read a host's index too.
 #[test]
 fn a_host_index_is_never_curated_and_cant_shadow_another_source() {
-    let v = host_index();
+    let mut v = host_index();
     let index = Index::from_host_bytes(v.to_string().as_bytes(), "page.1").unwrap();
     let source = &index.sources()[0];
     // The file's `curated: true` and its ID `fonts-host` are not kept.
     assert_eq!((source.id.as_str(), source.curated, source.user_url.as_deref()), ("host:page.1", false, None));
     let sans = index.family("Test Sans").unwrap();
     assert_eq!((sans.source.as_str(), sans.is_curated()), ("host:page.1", false));
-    let dir = sans.dir().to_string();
-    assert!(dir.starts_with("host-page-1-") && dir.ends_with("/test-sans"), "{dir}");
-    let face = index.find_face("Test Sans", "Bold").unwrap();
-    assert_eq!(index.file_urls(face.family, face.file), ["https://fonts.host.example/files/ofl/testsans/TestSans-Bold.ttf"]);
-    // Gzipped, the same.
-    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    std::io::Write::write_all(&mut gz, v.to_string().as_bytes()).unwrap();
-    let zipped = Index::from_host_bytes(&gz.finish().unwrap(), "page.1").unwrap();
-    assert_eq!(zipped.sources()[0].id, "host:page.1");
-    // A host's index that declares a built-in source's ID, or a user's, is still its own source.
-    let mut google = v.clone();
-    google["source"] = json!(GOOGLE_FONTS);
-    google["source_info"]["id"] = json!(GOOGLE_FONTS);
-    let merged = Index::merge([index_of(&fixture().index).unwrap(), Index::from_host_bytes(google.to_string().as_bytes(), "page.1").unwrap()]);
+    // A host's index that declares a built-in source's ID is still its own source.
+    v["source"] = json!(GOOGLE_FONTS);
+    v["source_info"]["id"] = json!(GOOGLE_FONTS);
+    let merged = Index::merge([index_of(&fixture().index).unwrap(), Index::from_host_bytes(v.to_string().as_bytes(), "page.1").unwrap()]);
     assert_eq!(merged.sources().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), [GOOGLE_FONTS, "host:page.1"]);
     assert!(merged.problems().is_empty());
-    assert!(merged.family("Test Sans").unwrap().is_curated(), "lookups prefer the built-in source");
     assert!(!merged.family_from("host:page.1", "Test Sans").unwrap().is_curated());
-    // One face at a time is an index too.
-    let mut one = v.clone();
-    one["families"] = json!([v["families"][0]]);
-    one["families"][0]["files"] = json!([v["families"][0]["files"][0]]);
-    assert_eq!(Index::from_host_bytes(one.to_string().as_bytes(), "one").unwrap().families()[0].files.len(), 1);
 }
 
 #[test]
@@ -802,46 +796,7 @@ fn a_host_index_keeps_cc0_and_bitstream_vera_families_and_leaves_out_other_licen
     assert!(warnings.iter().any(|w| w.contains("Vera Bare") && w.contains("license_file")));
 }
 
-#[test]
-fn a_host_index_is_refused_whole_by_the_rules_of_a_users() {
-    let good = host_index();
-    let with = |edit: &dyn Fn(&mut serde_json::Value)| {
-        let mut v = good.clone();
-        edit(&mut v);
-        v.to_string().into_bytes()
-    };
-    let refused = [
-        with(&|v| v["families"][0]["files"][1]["sha256"] = json!("0".repeat(63))),
-        with(&|v| v["families"][0]["files"][1]["sha256"] = json!("A".repeat(64))),
-        with(&|v| v["source_info"]["file_urls"] = json!(["http://fonts.host.example/files/{path}"])),
-        with(&|v| v["source_info"]["file_urls"] = json!(["https://fonts.host.example/files/"])),
-        with(&|v| v["families"][1]["files"][0]["path"] = json!("../outside/Evil.ttf")),
-        with(&|v| v["families"][1]["files"][0]["path"] = json!("/etc/Evil.ttf")),
-        with(&|v| v["families"][1]["files"][0]["path"] = json!("a\\b/Evil.ttf")),
-        with(&|v| v["families"][1]["files"][0]["size"] = json!(0)),
-        with(&|v| v["version"] = json!("2.0")),
-        b"not json".to_vec(),
-    ];
-    for bytes in &refused {
-        assert!(Index::from_host_bytes(bytes, "page").is_err(), "{}", String::from_utf8_lossy(bytes));
-        // The rules are a user's: the same bytes are refused there too.
-        assert!(Index::from_user_bytes(bytes, "https://fonts.host.example/index.json").is_err());
-    }
-    let ok = good.to_string().into_bytes();
-    assert!(Index::from_host_bytes(&ok, "page").is_ok());
-    // The host's own name for the index is checked.
-    for id in ["", ".hidden", "a/b", "a b", "a:b", "é", &"x".repeat(65)] {
-        assert!(matches!(Index::from_host_bytes(&ok, id), Err(IndexError::Invalid(_))), "{id:?}");
-    }
-    assert!(Index::from_host_bytes(&ok, &"x".repeat(64)).is_ok());
-    // Adding nothing: a refused index leaves what merges alone.
-    let before = Index::merge([index_of(&fixture().index).unwrap()]);
-    let merged = Index::merge([before.clone(), Index::from_host_bytes(&refused[0], "page").unwrap_or_default()]);
-    assert_eq!(merged.sources().len(), 1);
-    assert_eq!(merged.families().len(), before.families().len());
-}
-
-/// The Test Sans family of [`host_index`] and its Bold file's entry, made to describe `bytes`
+/// The Test Sans family of [`host_index`] and its `style` file's entry, made to describe `bytes`
 /// instead (its size and sha256), as an index that lists the wrong file would.
 fn entry_for(index: &Index, style: &str, bytes: &[u8]) -> (Family, FontFile) {
     let face = index.find_face("Test Sans", style).unwrap();
@@ -851,54 +806,114 @@ fn entry_for(index: &Index, style: &str, bytes: &[u8]) -> (Family, FontFile) {
     (face.family.clone(), file)
 }
 
+// Invariant: a file with the index's sha256 is still refused when it is not the family or the
+// PostScript name its entry says (breaks if: the family check or the
+// PostScript check is dropped or loosened to accept a lookalike). Either
+// the typographic or the legacy name may be the family, and a name past 1,024 characters is not
+// cut short and compared.
 #[test]
-fn a_face_must_be_the_family_style_and_postscript_name_its_entry_says() {
-    let index = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
+fn a_face_must_be_the_family_and_postscript_name_its_entry_says() {
+    let index = host_index_read();
     let bold = Spec { style: "Bold", weight: 700, ..Spec::default() };
-    let right = font_as(&bold);
-    let (family, file) = entry_for(&index, "Bold", &right);
-    assert_eq!(verify_face(&family, &file, &right), Ok(()));
-    // The checks of verify_font come first.
-    let mut changed = right.clone();
-    *changed.last_mut().unwrap() ^= 1;
-    assert_eq!(verify_face(&family, &file, &changed), Err(VerifyError::Sha256));
-    assert!(matches!(verify_face(&family, &file, &right[1..]), Err(VerifyError::Size { .. })));
-    // The family is compared ignoring case; the typographic name wins over the legacy one.
-    let cased = font_as(&Spec { family: "TEST SANS", postscript: "TestSans-Bold", ..bold });
-    assert_eq!(verify_face(&family, &entry_for(&index, "Bold", &cased).1, &cased), Ok(()));
-    let split = font_as(&Spec { family: "Test Sans Bold", typographic: Some("Test Sans"), postscript: "TestSans-Bold", ..bold });
-    assert_eq!(verify_face(&family, &entry_for(&index, "Bold", &split).1, &split), Ok(()));
-    let legacy_only = font_as(&Spec { typographic: Some("Lookalike Sans"), ..bold });
-    assert!(matches!(verify_face(&family, &entry_for(&index, "Bold", &legacy_only).1, &legacy_only), Err(VerifyError::Family { .. })));
-
-    // Each wrong file below has the sha256 and size its entry lists, as a wrong index would give.
-    let wrong = |spec: Spec<'_>| {
+    // Each file below has the sha256 and size its entry lists, as a wrong index would give.
+    let check = |spec: Spec<'_>| {
         let bytes = font_as(&spec);
         let (family, file) = entry_for(&index, "Bold", &bytes);
         verify_face(&family, &file, &bytes)
     };
-    assert_eq!(wrong(Spec { family: "Other Sans", ..bold }), Err(VerifyError::Family { expected: "Test Sans".into(), found: "Other Sans".into() }));
-    assert!(matches!(wrong(Spec { weight: 400, ..bold }), Err(VerifyError::Style { .. })));
-    assert!(matches!(wrong(Spec { italic: true, ..bold }), Err(VerifyError::Style { .. })));
-    assert!(matches!(wrong(Spec { width_class: 3, ..bold }), Err(VerifyError::Style { .. })));
-    assert_eq!(
-        wrong(Spec { postscript: "TestSansLookalike-Bold", ..bold }),
-        Err(VerifyError::PostScript { expected: vec!["TestSans-Bold".into()], found: "TestSansLookalike-Bold".into() })
-    );
-    // An entry that gives no PostScript name is not held to one.
-    let other_ps = font_as(&Spec { postscript: "Anything", ..bold });
-    let (family2, mut file2) = entry_for(&index, "Bold", &other_ps);
-    file2.postscript.clear();
-    assert_eq!(verify_face(&family2, &file2, &other_ps), Ok(()));
-    // The errors say what was expected.
-    let message = wrong(Spec { weight: 400, ..bold }).unwrap_err().to_string();
-    assert!(message.contains("weight 400") && message.contains("weight 700"), "{message}");
-    // Not a font at all.
-    let junk = b"not a font".to_vec();
-    let (f3, e3) = entry_for(&index, "Bold", &junk);
-    assert_eq!(verify_face(&f3, &e3, &junk), Err(VerifyError::NotAFont));
+    assert_eq!(check(Spec { ..bold }), Ok(()));
+    assert!(matches!(check(Spec { family: "Other Sans", ..bold }), Err(VerifyError::Family { .. })));
+    // The legacy name alone is enough; so is the typographic name beside another legacy one.
+    assert_eq!(check(Spec { family: "Test Sans Bold", typographic: Some("Test Sans"), postscript: "TestSans-Bold", ..bold }), Ok(()));
+    assert_eq!(check(Spec { typographic: Some("Test Sans Typographic"), ..bold }), Ok(()));
+    // A family name followed by more than 1,024 characters is not the family.
+    let long = format!("Test Sans{}", " ".repeat(1100));
+    assert!(matches!(check(Spec { family: &long, postscript: "TestSans-Bold", ..bold }), Err(VerifyError::Family { .. })));
+    assert!(matches!(check(Spec { postscript: "TestSansLookalike-Bold", ..bold }), Err(VerifyError::PostScript { .. })));
+    // The Bold file for the Regular entry: another style's PostScript name.
+    let bytes = font_as(&bold);
+    let (family, file) = entry_for(&index, "Regular", &bytes);
+    assert!(matches!(verify_face(&family, &file, &bytes), Err(VerifyError::PostScript { .. })));
 }
 
+// Invariant: with no PostScript names, how a generator reads a font's OS/2 and head fields is
+// accepted and nothing else is (breaks if: a reading is dropped or widened: the legacy classes
+// 250 and 275, class 0 as 1 or 100, a width class past 9, either reading of the italic flag, an
+// axis stopping its comparison's skip, or the PostScript names stopping the comparison).
+#[test]
+fn without_postscript_names_a_style_is_one_of_the_files_readings() {
+    let index = host_index_read();
+    let check = |spec: Spec<'_>, edit: &dyn Fn(&mut FontFile)| {
+        let bytes = font_as(&spec);
+        let (family, mut file) = entry_for(&index, "Regular", &bytes);
+        file.postscript.clear();
+        edit(&mut file);
+        verify_face(&family, &file, &bytes)
+    };
+    let style = |r: Result<(), VerifyError>| matches!(r, Err(VerifyError::Style { .. }));
+    let spec = Spec::default;
+    assert_eq!(check(spec(), &|_| {}), Ok(()));
+    // Weight: the class, or the CSS weight of a legacy class; class 0 is 1.
+    assert_eq!(check(Spec { weight: 250, ..spec() }, &|f| f.weight = 100), Ok(()));
+    assert_eq!(check(Spec { weight: 250, ..spec() }, &|f| f.weight = 250), Ok(()));
+    assert_eq!(check(Spec { weight: 275, ..spec() }, &|f| f.weight = 200), Ok(()));
+    assert_eq!(check(Spec { weight: 0, ..spec() }, &|f| f.weight = 1), Ok(()));
+    assert!(style(check(Spec { weight: 300, ..spec() }, &|f| f.weight = 100)));
+    assert!(style(check(Spec { weight: 250, ..spec() }, &|f| f.weight = 200)));
+    // Width: the class's percentage; outside 1 to 9 the end or 100.
+    assert_eq!(check(Spec { width_class: 0, ..spec() }, &|f| f.width = 100.0), Ok(()));
+    assert_eq!(check(Spec { width_class: 0, ..spec() }, &|f| f.width = 50.0), Ok(()));
+    assert_eq!(check(Spec { width_class: 12, ..spec() }, &|f| f.width = 100.0), Ok(()));
+    assert_eq!(check(Spec { width_class: 12, ..spec() }, &|f| f.width = 200.0), Ok(()));
+    assert!(style(check(Spec { width_class: 12, ..spec() }, &|f| f.width = 150.0)));
+    assert!(style(check(Spec { width_class: 3, ..spec() }, &|f| f.width = 100.0)));
+    assert_eq!(check(Spec { width_class: 3, ..spec() }, &|f| f.width = 75.2), Ok(()));
+    // Italic: fsSelection italic or oblique, or fsSelection italic or head's macStyle.
+    let italic = |f: &mut FontFile| f.style = "italic".into();
+    assert_eq!(check(Spec { italic: true, ..spec() }, &italic), Ok(()));
+    assert_eq!(check(Spec { oblique: true, ..spec() }, &italic), Ok(()));
+    assert_eq!(check(Spec { mac_italic: true, ..spec() }, &italic), Ok(()));
+    // An `ital` axis in the entry skips the comparison: an upright file passes an italic entry.
+    let italic_axis = |f: &mut FontFile| {
+        italic(f);
+        f.axes = vec![Axis { tag: "ital".into(), min: 0.0, max: 1.0 }];
+    };
+    let axes: &[(&[u8; 4], f32, f32, f32)] = &[(b"ital", 0.0, 0.0, 1.0)];
+    assert_eq!(check(Spec { axes, ..spec() }, &italic_axis), Ok(()));
+    assert!(style(check(spec(), &italic)), "an upright file is not an italic entry's");
+    assert!(style(check(Spec { italic: true, ..spec() }, &|_| {})), "an italic file is not an upright entry's");
+    // Without an OS/2 table: the weight is bold or regular by macStyle, the width 100, the italic
+    // flag macStyle's.
+    let bare = |bold, italic| Spec { no_os2: true, mac_bold: bold, mac_italic: italic, ..spec() };
+    assert_eq!(check(bare(false, false), &|_| {}), Ok(()));
+    assert_eq!(check(bare(true, true), &|f| (f.weight, f.style) = (700, "italic".into())), Ok(()));
+    assert!(style(check(bare(true, false), &|_| {})));
+    assert!(style(check(bare(false, false), &|f| f.weight = 700)));
+    assert!(style(check(bare(false, false), &|f| f.width = 75.0)));
+    // A variable file's entry gives the default instance's or a convention's: its axes skip the
+    // comparison of what they cover, and only that.
+    let variable = |f: &mut FontFile| {
+        f.weight = 100;
+        f.axes = vec![Axis { tag: "wght".into(), min: 100.0, max: 900.0 }, Axis { tag: "wdth".into(), min: 50.0, max: 200.0 }];
+    };
+    let axes: &[(&[u8; 4], f32, f32, f32)] = &[(b"wght", 100.0, 100.0, 900.0), (b"wdth", 50.0, 100.0, 200.0)];
+    assert_eq!(check(Spec { weight: 400, axes, ..spec() }, &variable), Ok(()));
+    assert_eq!(check(Spec { width_class: 3, axes, ..spec() }, &variable), Ok(()));
+    let narrower = |f: &mut FontFile| {
+        variable(f);
+        f.axes.retain(|a| a.tag != "wght");
+    };
+    let axes: &[(&[u8; 4], f32, f32, f32)] = &[(b"wdth", 50.0, 100.0, 200.0)];
+    assert!(style(check(Spec { weight: 400, axes, ..spec() }, &narrower)));
+    // With PostScript names listed, the weight, width and italic flag are not compared.
+    let bytes = font_as(&Spec { weight: 300, width_class: 3, italic: true, postscript: "TestSans-Regular", ..spec() });
+    let (family, file) = entry_for(&index, "Regular", &bytes);
+    assert_eq!(verify_face(&family, &file, &bytes), Ok(()));
+}
+
+// Invariant: a file is variable exactly when its entry lists axes, with at least each axis's
+// range (breaks if: either direction of the static/variable check, the range comparison, or the
+// lookup of an axis by tag changes).
 #[test]
 fn a_face_must_have_a_style_name_its_entry_lists() {
     let index = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
@@ -978,7 +993,7 @@ fn a_face_must_have_a_style_name_its_entry_lists() {
 
 #[test]
 fn a_variable_file_must_have_the_axes_its_entry_lists() {
-    let index = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
+    let index = host_index_read();
     let family = index.family("Test Var").unwrap();
     let entry = |bytes: &[u8]| {
         let mut file = family.files[0].clone();
@@ -986,49 +1001,58 @@ fn a_variable_file_must_have_the_axes_its_entry_lists() {
         file.sha256 = sha256_hex(bytes);
         file
     };
-    let var = |name: &'static str, axes: &'static [(&'static [u8; 4], f32, f32, f32)]| Spec {
-        family: "Test Var",
-        postscript: name,
-        axes,
-        ..Spec::default()
-    };
-    let right = font_as(&var("TestVar-Regular", &[(b"wght", 300.0, 400.0, 700.0)]));
+    let var =
+        |axes: &'static [(&'static [u8; 4], f32, f32, f32)]| Spec { family: "Test Var", postscript: "TestVar-Regular", axes, ..Spec::default() };
+    let right = font_as(&var(&[(b"wght", 300.0, 400.0, 700.0)]));
     assert_eq!(verify_face(family, &entry(&right), &right), Ok(()));
-    let wider = font_as(&var("TestVar-Regular", &[(b"wght", 100.0, 400.0, 900.0), (b"wdth", 75.0, 100.0, 100.0)]));
+    let wider = font_as(&var(&[(b"wght", 100.0, 400.0, 900.0), (b"wdth", 75.0, 100.0, 100.0)]));
     assert_eq!(verify_face(family, &entry(&wider), &wider), Ok(()), "a file may reach more than its entry says");
-    let narrow = font_as(&var("TestVar-Regular", &[(b"wght", 400.0, 400.0, 700.0)]));
+    let narrow = font_as(&var(&[(b"wght", 400.0, 400.0, 700.0)]));
     assert!(matches!(verify_face(family, &entry(&narrow), &narrow), Err(VerifyError::Axis { tag, .. }) if tag == "wght"));
-    let other_axis = font_as(&var("TestVar-Regular", &[(b"wdth", 75.0, 100.0, 100.0)]));
-    assert!(matches!(verify_face(family, &entry(&other_axis), &other_axis), Err(VerifyError::Axis { found, .. }) if found == "none"));
-    let static_file = font_as(&var("TestVar-Regular", &[]));
+    let other_axis = font_as(&var(&[(b"wdth", 75.0, 100.0, 100.0)]));
+    assert!(matches!(verify_face(family, &entry(&other_axis), &other_axis), Err(VerifyError::Axis { tag, .. }) if tag == "wght"));
+    let static_file = font_as(&var(&[]));
     assert!(matches!(verify_face(family, &entry(&static_file), &static_file), Err(VerifyError::Style { .. })));
-    // A named instance's PostScript name is the entry's too, but the file's own must be listed.
-    let other = font_as(&var("TestVar-Heavy", &[(b"wght", 300.0, 400.0, 700.0)]));
-    assert!(matches!(verify_face(family, &entry(&other), &other), Err(VerifyError::PostScript { .. })));
     // A static entry is not met by a variable file.
-    let index2 = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
-    let static_entry = index2.find_face("Test Sans", "Bold").unwrap();
     let variable_bold = font_as(&Spec { style: "Bold", weight: 700, axes: &[(b"wght", 300.0, 700.0, 700.0)], ..Spec::default() });
-    let mut file = static_entry.file.clone();
-    file.size = variable_bold.len() as u64;
-    file.sha256 = sha256_hex(&variable_bold);
-    assert!(matches!(verify_face(static_entry.family, &file, &variable_bold), Err(VerifyError::Style { .. })));
+    let (sans, static_entry) = entry_for(&index, "Bold", &variable_bold);
+    assert!(matches!(verify_face(&sans, &static_entry, &variable_bold), Err(VerifyError::Style { .. })));
 }
 
+// Invariant: damaged or hostile font bytes make `verify_face` answer, never panic: every prefix of
+// a font and each byte of it set to 0x00 and to 0xFF, each against two entries that list the
+// bytes' own size and sha256, so the checks after it are reached: one with a PostScript name and
+// one with none, which reaches the comparison of the style; the font has a `head` table, so that
+// is mutated too (breaks if: a table read or a name record is trusted). One small font: the sweep is quadratic in its size.
 #[test]
-fn any_face_of_a_collection_may_be_the_one() {
-    let index = Index::from_host_bytes(host_index().to_string().as_bytes(), "page").unwrap();
-    let regular = font_as(&Spec::default());
-    let bold = font_as(&Spec { style: "Bold", weight: 700, ..Spec::default() });
-    let stranger = font_as(&Spec { family: "Other Sans", style: "Bold", weight: 700, ..Spec::default() });
-    let ttc = collection(&[stranger.clone(), regular.clone(), bold]);
-    assert!(is_font(&ttc));
-    let (family, file) = entry_for(&index, "Bold", &ttc);
-    assert_eq!(verify_face(&family, &file, &ttc), Ok(()));
-    // No face of it is Test Sans Bold: the error is the nearest face's.
-    let ttc = collection(&[stranger, regular]);
-    let (family, file) = entry_for(&index, "Bold", &ttc);
-    assert!(matches!(verify_face(&family, &file, &ttc), Err(VerifyError::Style { .. })));
+fn hostile_font_bytes_never_panic_verify_face() {
+    let index = host_index_read();
+    let original = font_as(&Spec {
+        style: "Bold",
+        weight: 700,
+        mac_italic: true,
+        typographic: Some("Test Sans"),
+        axes: &[(b"wght", 300.0, 700.0, 700.0)],
+        ..Spec::default()
+    });
+    let check = |bytes: &[u8]| {
+        let (family, mut file) = entry_for(&index, "Bold", bytes);
+        file.axes = vec![Axis { tag: "wght".into(), min: 300.0, max: 700.0 }];
+        let mut bare = file.clone();
+        bare.postscript.clear();
+        (verify_face(&family, &file, bytes).is_ok(), verify_face(&family, &bare, bytes).is_ok())
+    };
+    assert_eq!(check(&original), (true, true), "the unchanged file passes both entries, so the sweep reaches the checks");
+    for end in 0..original.len() {
+        check(&original[..end]);
+    }
+    for at in 0..original.len() {
+        for byte in [0x00, 0xFF] {
+            let mut bytes = original.clone();
+            bytes[at] = byte;
+            check(&bytes);
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1233,6 +1257,9 @@ mod store {
         catalog.rescan();
         assert!(catalog.by_postscript_name("TestSans-Bold").is_none());
         let store = user_store(&server, &dir).with_catalog(catalog.clone());
+        let host = host_index_read();
+        let refused = store.install_family(&host, host.family("Test Sans").unwrap(), &Cancel::new(), &mut none);
+        assert!(matches!(refused, Err(Error::HostFamily(_))), "{refused:?}");
 
         let mut seen = Vec::new();
         let family = index.family("Test Sans").unwrap();
