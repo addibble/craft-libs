@@ -152,7 +152,8 @@ fn names(font: &FontRef<'_>, id: u16) -> Vec<String> {
 
 /// [`verify_font`] for one font, then that the font really is what `family`'s index entry says,
 /// whatever the index's author made of it. The host supplies the index and the sha256 together,
-/// so this catches an index that honestly describes the wrong file; it is not a security
+/// so this catches an index that describes the wrong file by its family, axes or style names,
+/// and, with no PostScript names listed, by its weight, width or italic flag. It is not a security
 /// boundary.
 ///
 /// The bytes must be the entry's size and sha256 and one font with a `name` table and outlines
